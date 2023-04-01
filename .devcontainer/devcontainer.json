@@ -1,0 +1,17 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/python
+{
+	"name": "brainpy(Python 3.9)",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"image": "mcr.microsoft.com/devcontainers/python:0-3.9",
+	"features": {
+		"ghcr.io/devcontainers/features/git:1": {}
+	  },
+	  "forwardPorts": [],
+	  "customizations": {},
+	  "postCreateCommand": "bash -c '/usr/bin/sudo apt update && /usr/bin/sudo apt upgrade -y && pip install brainpy && pip install -r requirements.txt && pip install -r requirements-dev.txt && pip install -r requirements-doc.txt'",
+	  "remoteUser": "vscode",
+	  "mounts": [
+		"source=F:\\\\analysis\\\\SocialMemory,target=/workspaces/SocialMemory,type=bind,consistency=cached"
+	  ]
+	}
