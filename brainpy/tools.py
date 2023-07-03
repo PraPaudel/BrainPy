@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 
+
 from brainpy._src.tools.codes import (
   repr_object as repr_object,
+  repr_dict as repr_dict,
   repr_context as repr_context,
   copy_doc as copy_doc,
   code_lines_to_func as code_lines_to_func,
@@ -38,8 +40,9 @@ from brainpy._src.tools.others import (
   init_progress_bar as init_progress_bar,
 )
 
-from brainpy._src.tools.naming import (
-  check_name_uniqueness as check_name_uniqueness,
-  get_unique_name as get_unique_name,
-  clear_name_cache as clear_name_cache,
+from brainpy._src.tools.install import (
+  jaxlib_install_info,
 )
+
+
+

@@ -1,14 +1,20 @@
 # -*- coding: utf-8 -*-
-
+import sys
+import tempfile
 import unittest
-import brainpy as bp
-import brainpy.math as bm
-from absl.testing import parameterized
-from jax._src import test_util as jtu
 from functools import partial
 
+import jax
+from jax import vmap
 
-class TestLoop(jtu.JaxTestCase):
+from absl.testing import parameterized
+from jax._src import test_util as jtu
+
+import brainpy as bp
+import brainpy.math as bm
+
+
+class TestLoop(parameterized.TestCase):
   def test_make_loop(self):
     def make_node(v1, v2):
       def update(x):
@@ -98,28 +104,33 @@ class TestLoop(jtu.JaxTestCase):
       return b
 
     if jit_f:
-      f = bm.jit(f, dyn_vars=c)
-    scan = partial(bm.for_loop, unroll=unroll, dyn_vars=c)
+      f = bm.jit(f)
+    scan = partial(bm.for_loop, f, unroll=unroll, )
     if jit_scan:
-      scan = bm.jit(scan, static_argnames=('body_fun',), dyn_vars=c)
-    ans = scan(body_fun=f, operands=all_a)
+      scan = bm.jit(scan)
+    ans = scan(operands=all_a)
     print(ans)
     print(c)
+
+  def test_for_loop_progress_bar(self):
+    xs = bm.arange(100)
+    ys = bm.for_loop(lambda a: a, xs, progress_bar=True)
+    self.assertTrue(bm.allclose(xs, ys))
 
 
 class TestIfElse(unittest.TestCase):
   def test1(self):
     def f(a):
-      return bm.ifelse(conditions=[a > 10, a > 5, a > 2, a > 0],
-                       branches=[lambda _: 1,
-                                 lambda _: 2,
-                                 lambda _: 3,
-                                 lambda _: 4,
-                                 lambda _: 5])
+      return bm.ifelse(conditions=[a < 0, a < 2, a < 5, a < 10],
+                       branches=[lambda: 1,
+                                 lambda: 2,
+                                 lambda: 3,
+                                 lambda: 4,
+                                 lambda: 5])
 
     self.assertTrue(f(3) == 3)
-    self.assertTrue(f(1) == 4)
-    self.assertTrue(f(-1) == 5)
+    self.assertTrue(f(1) == 2)
+    self.assertTrue(f(-1) == 1)
 
   def test2(self):
     def f(a):
@@ -134,14 +145,14 @@ class TestIfElse(unittest.TestCase):
     var_a = bm.Variable(bm.zeros(1))
 
     def f(a):
-      def f1(_):
+      def f1():
         var_a.value += 1
         return 1
 
       return bm.ifelse(conditions=[a > 10, a > 5, a > 2, a > 0],
                        branches=[f1,
-                                 lambda _: 2, lambda _: 3,
-                                 lambda _: 4, lambda _: 5],
+                                 lambda: 2, lambda: 3,
+                                 lambda: 4, lambda: 5],
                        dyn_vars=var_a,
                        show_code=True)
 
@@ -152,8 +163,6 @@ class TestIfElse(unittest.TestCase):
     self.assertTrue(f(-1) == 5)
 
   def test_vmap(self):
-    from jax import vmap
-
     def f(operands):
       f = lambda a: bm.ifelse(conditions=[a > 10, a > 5, a > 2, a > 0],
                               branches=[lambda _: 1,
@@ -169,8 +178,6 @@ class TestIfElse(unittest.TestCase):
     self.assertTrue(r.size == 200)
 
   def test_vmap2(self):
-    from jax import vmap
-
     def f2():
       f = lambda a: bm.ifelse(conditions=[a > 10, a > 5, a > 2, a > 0],
                               branches=[1, 2, 3, 4, lambda _: 5],
@@ -179,3 +186,221 @@ class TestIfElse(unittest.TestCase):
       return vmap(f)(bm.random.randint(-20, 20, 200))
 
     self.assertTrue(f2().size == 200)
+
+
+class TestWhile(bp.testing.UnitTestCase):
+  def test1(self):
+    a = bm.Variable(bm.zeros(1))
+    b = bm.Variable(bm.ones(1))
+
+    def cond(x, y):
+      return x < 6.
+
+    def body(x, y):
+      a.value += x
+      b.value *= y
+      return x + b[0], y + 1.
+
+    res = bm.while_loop(body, cond, operands=(1., 1.))
+    print()
+    print(res)
+
+  def test3(self):
+    a = bm.Variable(bm.zeros(1))
+    b = bm.Variable(bm.ones(1))
+
+    def cond(x, y):
+      return bm.all(a.value < 6.)
+
+    def body(x, y):
+      a.value += x
+      b.value *= y
+
+    res = bm.while_loop(body, cond, operands=(1., 1.))
+    self.assertTrue(bm.allclose(a, 6.))
+    self.assertTrue(bm.allclose(b, 1.))
+    print()
+    print(res)
+    print(a)
+    print(b)
+
+
+  def test2(self):
+    a = bm.Variable(bm.zeros(1))
+    b = bm.Variable(bm.ones(1))
+
+    def cond(x, y):
+      return x < 6.
+
+    def body(x, y):
+      a.value += x
+      b.value *= y
+      return x + b[0], y + 1.
+
+    res = bm.while_loop(body, cond, operands=(1., 1.))
+    print()
+    print(res)
+
+    with jax.disable_jit():
+      a = bm.Variable(bm.zeros(1))
+      b = bm.Variable(bm.ones(1))
+
+      res2 = bm.while_loop(body, cond, operands=(1., 1.))
+      print(res2)
+      self.assertTrue(bm.array_equal(res2[0], res[0]))
+      self.assertTrue(bm.array_equal(res2[1], res[1]))
+
+
+class TestDebugAndCompile(parameterized.TestCase):
+  def test_cond1(self):
+    file = tempfile.TemporaryFile('w+')
+
+    def f_true(a):
+      print('True function ..', file=file)
+      return a
+
+    def f_false(a):
+      print('False function ..', file=file)
+      return a
+
+    jax.lax.cond(True, f_true, f_false, 1.)
+
+    expected_res = '''
+True function ..
+False function ..
+    '''
+
+    file.seek(0)
+    self.assertTrue(file.read().strip() == expected_res.strip())
+
+  def test_cond2(self):
+    file = tempfile.TemporaryFile('w+')
+
+    def f1(a):
+      print('f1 ...', file=file)
+      return a * 0.1
+
+    def f2(a):
+      print('f2 ...', file=file)
+      return a * 1.
+
+    def f3(a):
+      print('f3 ...', file=file)
+      return bm.cond(a > 1, f1, f2, a)
+
+    def f4(a):
+      print('f4 ...', file=file)
+      return a * 10.
+
+    r = bm.cond(True, f3, f4, 2.)
+    print(r)
+
+    expected_res = '''
+f3 ...
+f1 ...
+f2 ...
+f4 ...
+f3 ...
+f1 ...
+f2 ...
+f4 ...
+    '''
+    file.seek(0)
+    # print(file.read().strip())
+    self.assertTrue(file.read().strip() == expected_res.strip())
+
+  def test_for_loop(self):
+    def f(a):
+      print('f ...', file=file)
+      return a
+
+    file = tempfile.TemporaryFile('w+')
+    bm.for_loop(f, bm.arange(10))
+    file.seek(0)
+    expect = '''
+f ...
+f ...
+    '''
+    self.assertTrue(file.read().strip() == expect.strip())
+
+    file = tempfile.TemporaryFile('w+')
+    bm.for_loop(f, bm.arange(10), jit=False)
+    file.seek(0)
+    expect = '\n'.join(['f ...'] * 10)
+    self.assertTrue(file.read().strip() == expect.strip())
+
+  def test_while_loop(self):
+    def cond(a):
+      print('cond ...', file=file)
+      return a < 1
+
+    def body(a):
+      print('body ...', file=file)
+      return a + 1
+
+    file = tempfile.TemporaryFile('w+')
+    bm.while_loop(body, cond, 10)
+    file.seek(0)
+    expect = '''
+cond ...
+body ...
+cond ...
+body ...
+    '''
+    out1 = file.read().strip()
+    print(out1)
+    self.assertTrue(out1 == expect.strip())
+
+    file = tempfile.TemporaryFile('w+')
+    jax.lax.while_loop(cond, body, 10)
+    file.seek(0)
+    out2 = file.read().strip()
+    expect = '''
+cond ...
+body ...
+    '''
+    self.assertTrue(expect.strip() == out2)
+
+    file = tempfile.TemporaryFile('w+')
+    with jax.disable_jit():
+      jax.lax.while_loop(cond, body, 10)
+    file.seek(0)
+    out3 = file.read().strip()
+    self.assertTrue(out3 == 'cond ...')
+
+    file = tempfile.TemporaryFile('w+')
+    with jax.disable_jit():
+      bm.while_loop(body, cond, 10)
+      file.seek(0)
+      out4 = file.read().strip()
+      self.assertTrue(out4 == 'cond ...')
+
+    file = tempfile.TemporaryFile('w+')
+    with jax.disable_jit():
+      jax.lax.while_loop(cond, body, -5)
+    file.seek(0)
+    out5 = file.read().strip()
+    expect = '''
+cond ...
+body ...
+cond ...
+body ...
+cond ...
+body ...
+cond ...
+body ...
+cond ...
+body ...
+cond ...
+body ...
+cond ...
+    
+    '''
+    self.assertTrue(out5 == expect.strip())
+
+    file = tempfile.TemporaryFile('w+')
+    with jax.disable_jit():
+      bm.while_loop(body, cond, -5)
+    file.seek(0)
+    out6 = file.read().strip()
+    self.assertTrue(out5 == out6)

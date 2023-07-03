@@ -3,7 +3,6 @@
 import io
 import os
 import re
-import sys
 
 from setuptools import find_packages
 from setuptools import setup
@@ -38,11 +37,8 @@ with io.open(os.path.join(here, 'README.md'), 'r', encoding='utf-8') as f:
   README = f.read()
 
 # installation packages
-packages = find_packages()
-if 'docs' in packages:
-  packages.remove('docs')
-if 'tests' in packages:
-  packages.remove('tests')
+packages = find_packages(exclude=['lib*', 'docs', 'tests'])
+
 
 # setup
 setup(
@@ -54,8 +50,8 @@ setup(
   author='BrainPy Team',
   author_email='chao.brain@qq.com',
   packages=packages,
-  python_requires='>=3.7',
-  install_requires=['numpy>=1.15', 'jax>=0.3.0', 'tqdm', 'msgpack'],
+  python_requires='>=3.8',
+  install_requires=['numpy>=1.15', 'jax>=0.4.1', 'tqdm', 'msgpack'],
   url='https://github.com/brainpy/BrainPy',
   project_urls={
     "Bug Tracker": "https://github.com/brainpy/BrainPy/issues",
@@ -74,10 +70,10 @@ setup(
     'Operating System :: OS Independent',
     'Programming Language :: Python',
     'Programming Language :: Python :: 3',
-    'Programming Language :: Python :: 3.7',
     'Programming Language :: Python :: 3.8',
     'Programming Language :: Python :: 3.9',
     'Programming Language :: Python :: 3.10',
+    'Programming Language :: Python :: 3.11',
     'Intended Audience :: Science/Research',
     'License :: OSI Approved :: Apache Software License',
     'Topic :: Scientific/Engineering :: Bio-Informatics',

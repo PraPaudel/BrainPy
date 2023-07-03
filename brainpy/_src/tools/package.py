@@ -13,6 +13,7 @@ try:
 except (ImportError, ModuleNotFoundError):
   brainpylib = None
 
+
 __all__ = [
   'import_numba',
   'import_brainpylib',
@@ -21,6 +22,9 @@ __all__ = [
   'numba_range',
   'SUPPORT_NUMBA',
 ]
+
+
+_minimal_brainpylib_version = '0.1.9'
 
 
 def import_numba():
@@ -32,10 +36,10 @@ def import_numba():
 
 def import_brainpylib():
   if brainpylib is None:
-    raise ModuleNotFoundError('brainpylib is needed. Please install brainpylib from source:\n'
-                              'https://brainpylib.readthedocs.io/en/latest/quickstart/installation.html \n\n'
-                              'or \n'
+    raise ModuleNotFoundError('brainpylib is needed. Please install brainpylib through:\n'
                               '> pip install brainpylib\n\n')
+  if brainpylib.__version__ < _minimal_brainpylib_version:
+    raise SystemError(f'This version of brainpy needs brainpylib >= {_minimal_brainpylib_version}.')
   return brainpylib
 
 

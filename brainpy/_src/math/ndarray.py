@@ -1,24 +1,19 @@
 # -*- coding: utf-8 -*-
 
-from typing import Union, Optional, NoReturn, Sequence, Any, Tuple as TupleType
-import warnings
 import operator
+from typing import Union, Optional, Sequence
 
 import jax
 import numpy as np
 from jax import numpy as jnp
 from jax.dtypes import canonicalize_dtype
-from jax.tree_util import register_pytree_node
+from jax.tree_util import register_pytree_node_class
 
 import brainpy.math
 from brainpy.errors import MathError
 
 __all__ = [
   'Array', 'ndarray', 'JaxArray',  # alias of Array
-  'Variable',
-  'TrainVar',
-  'Parameter',
-  'VariableView',
 ]
 
 # Ways to change values in a zero-dimensional array
@@ -31,33 +26,6 @@ __all__ = [
 #    >>> x[()] = 2
 
 _all_slice = slice(None, None, None)
-
-msg = ('ArrayType created outside of the jit function '
-       'cannot be updated in JIT mode. You should '
-       'mark it as brainpy.math.Variable instead.')
-
-_jax_transformation_context_ = []
-
-
-def add_context(name) -> None:
-  _jax_transformation_context_.append(name)
-
-
-def del_context(name=None) -> None:
-  try:
-    context = _jax_transformation_context_.pop(-1)
-    if name is not None:
-      if context != name:
-        raise MathError('Transformation context is different!')
-  except IndexError:
-    raise MathError('No transformation context!')
-
-
-def get_context():
-  if len(_jax_transformation_context_) > 0:
-    return _jax_transformation_context_[-1]
-  else:
-    return None
 
 
 def _check_input_array(array):
@@ -84,13 +52,21 @@ def _check_out(out):
     raise TypeError(f'out must be an instance of brainpy Array. But got {type(out)}')
 
 
+def _get_dtype(v):
+  if hasattr(v, 'dtype'):
+    dtype = v.dtype
+  else:
+    dtype = canonicalize_dtype(type(v))
+  return dtype
+
+
+@register_pytree_node_class
 class Array(object):
   """Multiple-dimensional array in BrainPy.
   """
 
   is_brainpy_array = True
-  _need_check_context = True
-  __slots__ = ("_value", "_transform_context")
+  __slots__ = ("_value",)
 
   def __init__(self, value, dtype=None):
     # array value
@@ -101,26 +77,15 @@ class Array(object):
     if dtype is not None:
       value = jnp.asarray(value, dtype=dtype)
     self._value = value
-    # jit mode
-    self._transform_context = get_context()
 
-  def __check_context(self) -> None:
-    # raise error when in-place updating a
-    if self._need_check_context:
-      if self._transform_context is None:
-        if len(_jax_transformation_context_) > 0:
-          raise MathError(f'Array created outside of the transformation functions '
-                          f'({_jax_transformation_context_[-1]}) cannot be updated. '
-                          f'You should mark it as a brainpy.math.Variable instead.')
-      else:
-        if len(_jax_transformation_context_) > 0:
-          if self._transform_context != _jax_transformation_context_[-1]:
-            raise MathError(f'Array context "{self._transform_context}" differs from the JAX '
-                            f'transformation context "{_jax_transformation_context_[-1]}"'
-                            '\n\n'
-                            'Array created in one transformation function '
-                            'cannot be updated another transformation function. '
-                            'You should mark it as a brainpy.math.Variable instead.')
+  def _check_tracer(self):
+    self_value = self.value
+    if hasattr(self_value, '_trace'):
+      if len(self_value._trace.main.jaxpr_stack) == 0:
+        raise RuntimeError('This Array is modified during the transformation. '
+                           'BrainPy only supports transformations for Variable. '
+                           'Please declare it as a Variable.') from jax.core.escaped_tracer_error(self_value, None)
+    return self_value
 
   @property
   def value(self):
@@ -128,11 +93,8 @@ class Array(object):
 
   @value.setter
   def value(self, value):
-    self.update(value)
+    self_value = self._check_tracer()
 
-  def update(self, value):
-    """Update the value of this Array.
-    """
     if isinstance(value, Array):
       value = value.value
     elif isinstance(value, np.ndarray):
@@ -142,18 +104,23 @@ class Array(object):
     else:
       value = jnp.asarray(value)
     # check
-    if value.shape != self.value.shape:
-      raise MathError(f"The shape of the original data is {self.value.shape}, "
+    if value.shape != self_value.shape:
+      raise MathError(f"The shape of the original data is {self_value.shape}, "
                       f"while we got {value.shape}.")
-    if value.dtype != self.value.dtype:
-      raise MathError(f"The dtype of the original data is {self.value.dtype}, "
+    if value.dtype != self_value.dtype:
+      raise MathError(f"The dtype of the original data is {self_value.dtype}, "
                       f"while we got {value.dtype}.")
     self._value = value.value if isinstance(value, Array) else value
+
+  def update(self, value):
+    """Update the value of this Array.
+    """
+    self.value = value
 
   @property
   def dtype(self):
     """Variable dtype."""
-    return self._value.dtype
+    return _get_dtype(self._value)
 
   @property
   def shape(self):
@@ -215,8 +182,8 @@ class Array(object):
     - https://github.com/google/jax/issues/7713
     - https://github.com/google/jax/pull/3821
     """
-    for v in self.value:
-      yield v
+    for i in range(self.value.shape[0]):
+      yield self.value[i]
 
   def __getitem__(self, index):
     if isinstance(index, slice) and (index == _all_slice):
@@ -246,7 +213,8 @@ class Array(object):
       index = jnp.asarray(index)
 
     # update
-    self.value = self.value.at[index].set(value)
+    self_value = self._check_tracer()
+    self.value = self_value.at[index].set(value)
 
   # ---------- #
   # operations #
@@ -900,7 +868,7 @@ class Array(object):
 
     Example::
 
-        >>> x = brainpy.math.randn(4, 4)
+        >>> x = brainpy.math.random.randn(4, 4)
         >>> x.size
        [4, 4]
         >>> y = x.view(16)
@@ -910,7 +878,7 @@ class Array(object):
         >>> z.size
         [2, 8]
 
-        >>> a = brainpy.math.randn(1, 2, 3, 4)
+        >>> a = brainpy.math.random.randn(1, 2, 3, 4)
         >>> a.size
         [1, 2, 3, 4]
         >>> b = a.transpose(1, 2)  # Swaps 2nd and 3rd dimension
@@ -961,7 +929,7 @@ class Array(object):
 
     Example::
 
-        >>> x = brainpy.math.randn(4, 4)
+        >>> x = brainpy.math.random.randn(4, 4)
         >>> x
         Array([[ 0.9482, -0.0310,  1.4999, -0.5316],
                 [-0.1520,  0.7472,  0.5617, -0.8649],
@@ -1049,7 +1017,7 @@ class Array(object):
 
   def as_variable(self):
     """As an instance of Variable."""
-    return Variable(self)
+    return brainpy.math.Variable(self)
 
   def __format__(self, specification):
     return self.value.__format__(specification)
@@ -1081,9 +1049,9 @@ class Array(object):
     from jax.dlpack import to_dlpack  # pylint: disable=g-import-not-at-top
     return to_dlpack(self.value)
 
-  # **********************************
-  # For Pytorch compitable
-  # **********************************
+  # ----------------------
+  # PyTorch compatibility
+  # ----------------------
 
   def unsqueeze(self, dim: int) -> 'Array':
     """
@@ -1146,11 +1114,8 @@ class Array(object):
       array = Array(array)
     return Array(jnp.broadcast_to(self.value, array.value.shape))
 
-  # def item(self, *args) -> Any:
-  #   return self.value.item(*args)
-
   def pow(self, index: int):
-    return _return(self._value ** index)
+    return _return(self.value ** index)
 
   def addr(
       self,
@@ -1199,6 +1164,7 @@ class Array(object):
     vec2 = _as_jax_array_(vec2)
     r = alpha * jnp.outer(vec1, vec2) + beta * self.value
     self.value = r
+    return self
 
   def outer(self, other: Union['Array', jax.Array, np.ndarray]) -> 'Array':
     other = _as_jax_array_(other)
@@ -1212,11 +1178,16 @@ class Array(object):
       _check_out(out)
       out.value = r
 
-  def abs_(self) -> None:
+  def abs_(self):
     """
     in-place version of Array.abs()
     """
     self.value = jnp.abs(self.value)
+    return self
+
+  def add_(self, value):
+    self.value += value
+    return self
 
   def absolute(self, *, out: Optional[Union['Array', jax.Array, np.ndarray]] = None) -> Optional['Array']:
     """
@@ -1230,6 +1201,34 @@ class Array(object):
     """
     return self.abs_()
 
+
+  def mul(self, value):
+    return Array(self.value * value)
+
+  def mul_(self, value):
+    """
+    In-place version of :meth:`~Array.mul`.
+    """
+    self.value *= value
+    return self
+
+  def multiply(self, value):  # real signature unknown; restored from __doc__
+    """
+    multiply(value) -> Tensor
+
+    See :func:`torch.multiply`.
+    """
+    return self.value * value
+
+  def multiply_(self, value):  # real signature unknown; restored from __doc__
+    """
+    multiply_(value) -> Tensor
+
+    In-place version of :meth:`~Tensor.multiply`.
+    """
+    self.value *= value
+    return self
+
   def sin(self, *, out: Optional[Union['Array', jax.Array, np.ndarray]] = None) -> Optional['Array']:
     r = jnp.sin(self.value)
     if out is None:
@@ -1240,9 +1239,11 @@ class Array(object):
 
   def sin_(self) -> None:
     self.value = jnp.sin(self.value)
+    return self
 
   def cos_(self) -> None:
     self.value = jnp.cos(self.value)
+    return self
 
   def cos(self, *, out: Optional[Union['Array', jax.Array, np.ndarray]] = None) -> Optional['Array']:
     r = jnp.cos(self.value)
@@ -1254,6 +1255,7 @@ class Array(object):
 
   def tan_(self) -> None:
     self.value = jnp.tan(self.value)
+    return self
 
   def tan(self, *, out: Optional[Union['Array', jax.Array, np.ndarray]] = None) -> Optional['Array']:
     r = jnp.tan(self.value)
@@ -1265,6 +1267,7 @@ class Array(object):
 
   def sinh_(self) -> None:
     self.value = jnp.tanh(self.value)
+    return self
 
   def sinh(self, *, out: Optional[Union['Array', jax.Array, np.ndarray]] = None) -> Optional['Array']:
     r = jnp.tanh(self.value)
@@ -1276,6 +1279,7 @@ class Array(object):
 
   def cosh_(self) -> None:
     self.value = jnp.cosh(self.value)
+    return self
 
   def cosh(self, *, out: Optional[Union['Array', jax.Array, np.ndarray]] = None) -> Optional['Array']:
     r = jnp.cosh(self.value)
@@ -1287,6 +1291,7 @@ class Array(object):
 
   def tanh_(self) -> None:
     self.value = jnp.tanh(self.value)
+    return self
 
   def tanh(self, *, out: Optional[Union['Array', jax.Array, np.ndarray]] = None) -> Optional['Array']:
     r = jnp.tanh(self.value)
@@ -1298,6 +1303,7 @@ class Array(object):
 
   def arcsin_(self) -> None:
     self.value = jnp.arcsin(self.value)
+    return self
 
   def arcsin(self, *, out: Optional[Union['Array', jax.Array, np.ndarray]] = None) -> Optional['Array']:
     r = jnp.arcsin(self.value)
@@ -1309,6 +1315,7 @@ class Array(object):
 
   def arccos_(self) -> None:
     self.value = jnp.arccos(self.value)
+    return self
 
   def arccos(self, *, out: Optional[Union['Array', jax.Array, np.ndarray]] = None) -> Optional['Array']:
     r = jnp.arccos(self.value)
@@ -1320,6 +1327,7 @@ class Array(object):
 
   def arctan_(self) -> None:
     self.value = jnp.arctan(self.value)
+    return self
 
   def arctan(self, *, out: Optional[Union['Array', jax.Array, np.ndarray]] = None) -> Optional['Array']:
     r = jnp.arctan(self.value)
@@ -1359,6 +1367,7 @@ class Array(object):
     if max_value is None, then no upper bound.
     """
     self.clamp(min_value, max_value, out=self)
+    return self
 
   def clip_(self,
             min_value: Optional[Union['Array', jax.Array, np.ndarray]] = None,
@@ -1366,13 +1375,15 @@ class Array(object):
     """
     alias for clamp_
     """
-    return self.clip(min_value, max_value, out=self)
+    self.value = self.clip(min_value, max_value, out=self)
+    return self
 
   def clone(self) -> 'Array':
     return Array(self.value.copy())
 
   def copy_(self, src: Union['Array', jax.Array, np.ndarray]) -> None:
     self.value = jnp.copy(_as_jax_array_(src))
+    return self
 
   def cov_with(
       self,
@@ -1395,7 +1406,7 @@ class Array(object):
 
     Parameters
     ----------
-    shape : tuple or int
+    sizes : tuple or int
         The shape of the desired array. A single integer ``i`` is interpreted
         as ``(i,)``.
 
@@ -1425,252 +1436,56 @@ class Array(object):
           f'dimension {i}.  Target sizes: {sizes}.  Tensor sizes: {self.shape}')
     return Array(jnp.broadcast_to(self.value, sizes_list))
 
+  def tree_flatten(self):
+    return (self._value,), None
+
+  @classmethod
+  def tree_unflatten(cls, aux_data, flat_contents):
+    return cls(*flat_contents)
+
+  def zero_(self):
+    self.value = jnp.zeros_like(self.value)
+    return self
+
+  def fill_(self, value):
+    self.fill(value)
+    return self
+
+  def uniform_(self, low=0., high=1.):
+    self.value = brainpy.math.random.uniform(low, high, self.shape)
+    return self
+
+  def log_normal_(self, mean=1, std=2):
+    r"""Fills self tensor with numbers samples from the log-normal distribution parameterized by the given mean
+    :math:`\mu` and standard deviation :math:`\sigma`. Note that mean and std are the mean and standard
+    deviation of the underlying normal distribution, and not of the returned distribution:
+
+    .. math::
+
+       f(x)=\frac{1}{x \sigma \sqrt{2 \pi}} e^{-\frac{(\ln x-\mu)^2}{2 \sigma^2}}
+
+    Args:
+      mean: the mean value.
+      std: the standard deviation.
+    """
+    self.value = brainpy.math.random.lognormal(mean, std, self.shape)
+    return self
+
+  def normal_(self, ):
+    """
+    Fills self tensor with elements samples from the normal distribution parameterized by mean and std.
+    """
+    self.value = brainpy.math.random.randn(*self.shape)
+    return self
+
+  def cuda(self):
+    self.value = jax.device_put(self.value, jax.devices('cuda')[0])
+    return self
+
+  def cpu(self):
+    self.value = jax.device_put(self.value, jax.devices('cpu')[0])
+    return self
+
 
 JaxArray = Array
 ndarray = Array
-
-
-class Variable(Array):
-  """The pointer to specify the dynamical variable.
-
-  Initializing an instance of ``Variable`` by two ways:
-
-  >>> import brainpy.math as bm
-  >>> # 1. init a Variable by the concreate data
-  >>> v1 = bm.Variable(bm.zeros(10))
-  >>> # 2. init a Variable by the data shape
-  >>> v2 = bm.Variable(10)
-
-  Note that when initializing a `Variable` by the data shape,
-  all values in this `Variable` will be initialized as zeros.
-
-  Parameters
-  ----------
-  value_or_size: Shape, Array, int
-    The value or the size of the value.
-  dtype:
-    The type of the data.
-  batch_axis: optional, int
-    The batch axis.
-  """
-
-  _need_check_context = False
-  __slots__ = ('_value', '_batch_axis')
-
-  def __init__(
-      self,
-      value_or_size,
-      dtype: type = None,
-      batch_axis: int = None,
-  ):
-    if isinstance(value_or_size, int):
-      value = jnp.zeros(value_or_size, dtype=dtype)
-    elif isinstance(value_or_size, (tuple, list)) and all([isinstance(s, int) for s in value_or_size]):
-      value = jnp.zeros(value_or_size, dtype=dtype)
-    else:
-      value = value_or_size
-
-    super(Variable, self).__init__(value, dtype=dtype)
-
-    # check batch axis
-    if isinstance(value, Variable):
-      if value.batch_axis is not None and batch_axis is not None:
-        if batch_axis != value.batch_axis:
-          raise ValueError(f'"batch_axis" is not consistent. Got batch_axis in the given value '
-                           f'is {value.batch_axis}, but the specified batch_axis is {batch_axis}')
-      batch_axis = value.batch_axis
-
-    # assign batch axis
-    self._batch_axis = batch_axis
-    if batch_axis is not None:
-      if batch_axis >= self.ndim:
-        raise MathError(f'This variables has {self.ndim} dimension, '
-                        f'but the batch axis is set to be {batch_axis}.')
-
-  @property
-  def nobatch_shape(self) -> TupleType[int, ...]:
-    """Shape without batch axis."""
-    if self.batch_axis is not None:
-      shape = list(self.value.shape)
-      shape.pop(self.batch_axis)
-      return tuple(shape)
-    else:
-      return self.shape
-
-  @property
-  def batch_axis(self) -> Optional[int]:
-    return self._batch_axis
-
-  @batch_axis.setter
-  def batch_axis(self, val):
-    raise ValueError(f'Cannot set "batch_axis" after creating a {self.__class__.__name__} instance.')
-
-  @property
-  def batch_size(self) -> Optional[int]:
-    if self.batch_axis is None:
-      return None
-    else:
-      return self.shape[self.batch_axis]
-
-  @batch_size.setter
-  def batch_size(self, val):
-    raise ValueError(f'Cannot set "batch_size" manually.')
-
-  def update(self, value):
-    """Update the value of this Array.
-    """
-    if self._batch_axis is None:
-      ext_shape = jnp.shape(value)
-      int_shape = self.shape
-    else:
-      ext_shape = value.shape[:self._batch_axis] + value.shape[self._batch_axis + 1:]
-      int_shape = self.shape[:self._batch_axis] + self.shape[self._batch_axis + 1:]
-    if ext_shape != int_shape:
-      error = f"The shape of the original data is {self.shape}, while we got {value.shape}"
-      error += f' with batch_axis={self._batch_axis}.'
-      raise MathError(error)
-    if hasattr(value, 'dtype'):
-      dtype = value.dtype
-    else:
-      dtype = canonicalize_dtype(type(value))
-    if dtype != self.dtype:
-      raise MathError(f"The dtype of the original data is {self.dtype}, "
-                      f"while we got {dtype}.")
-    self._value = value.value if isinstance(value, Array) else value
-
-
-class TrainVar(Variable):
-  """The pointer to specify the trainable variable.
-  """
-  __slots__ = ('_value', '_batch_axis')
-
-  def __init__(self,
-               value_or_size,
-               dtype: type = None,
-               batch_axis: int = None):
-    super(TrainVar, self).__init__(value_or_size,
-                                   dtype=dtype,
-                                   batch_axis=batch_axis)
-
-
-class Parameter(Variable):
-  """The pointer to specify the parameter.
-  """
-  __slots__ = ('_value', '_batch_axis')
-
-  def __init__(self,
-               value_or_size,
-               dtype: type = None,
-               batch_axis: int = None):
-    super(Parameter, self).__init__(value_or_size,
-                                    dtype=dtype,
-                                    batch_axis=batch_axis)
-
-
-class ParallelVariable(Variable):
-  pass
-
-
-class BatchVariable(Variable):
-  pass
-
-
-class VariableView(Variable):
-  """A view of a Variable instance.
-
-  This class is used to create a subset view of ``brainpy.math.Variable``.
-
-  >>> import brainpy.math as bm
-  >>> bm.random.seed(123)
-  >>> origin = bm.Variable(bm.random.random(5))
-  >>> view = bm.VariableView(origin, slice(None, 2, None))  # origin[:2]
-  VariableView([0.02920651, 0.19066381], dtype=float32)
-
-  ``VariableView`` can be used to update the subset of the original
-  Variable instance, and make operations on this subset of the Variable.
-
-  >>> view[:] = 1.
-  >>> view
-  VariableView([1., 1.], dtype=float32)
-  >>> origin
-  Variable([1.       , 1.       , 0.5482849, 0.6564884, 0.8446237], dtype=float32)
-  >>> view + 10
-  Array([11., 11.], dtype=float32)
-  >>> view *= 10
-  VariableView([10., 10.], dtype=float32)
-
-  The above example demonstrates that the updating of an ``VariableView`` instance
-  is actually made in the original ``Variable`` instance.
-
-  Moreover, it's worthy to note that ``VariableView`` is not a PyTree.
-  """
-
-  def __init__(self, value: Variable, index):
-    self.index = jax.tree_util.tree_map(_as_jax_array_, index, is_leaf=lambda a: isinstance(a, Array))
-    if not isinstance(value, Variable):
-      raise ValueError('Must be instance of Variable.')
-    super(VariableView, self).__init__(value.value, batch_axis=value.batch_axis)
-    self._value = value
-
-  def __repr__(self) -> str:
-    print_code = repr(self._value)
-    prefix = f'{self.__class__.__name__}'
-    blank = " " * (len(prefix) + 1)
-    lines = print_code.split("\n")
-    lines[0] = prefix + "(" + lines[0]
-    for i in range(1, len(lines)):
-      lines[i] = blank + lines[i]
-    lines[-1] += ","
-    lines.append(blank + f'index={self.index})')
-    print_code = "\n".join(lines)
-    return print_code
-
-  @property
-  def value(self):
-    return self._value[self.index]
-
-  @value.setter
-  def value(self, v):
-    self.update(v)
-
-  def update(self, value):
-    int_shape = self.shape
-    if self.batch_axis is None:
-      ext_shape = value.shape
-    else:
-      ext_shape = value.shape[:self.batch_axis] + value.shape[self.batch_axis + 1:]
-      int_shape = int_shape[:self.batch_axis] + int_shape[self.batch_axis + 1:]
-    if ext_shape != int_shape:
-      error = f"The shape of the original data is {self.shape}, while we got {value.shape}"
-      if self.batch_axis is None:
-        error += '. Do you forget to set "batch_axis" when initialize this variable?'
-      else:
-        error += f' with batch_axis={self.batch_axis}.'
-      raise MathError(error)
-    if value.dtype != self._value.dtype:
-      raise MathError(f"The dtype of the original data is {self._value.dtype}, "
-                      f"while we got {value.dtype}.")
-    self._value[self.index] = value.value if isinstance(value, Array) else value
-
-
-def _jaxarray_unflatten(aux_data, flat_contents):
-  r = Array(*flat_contents)
-  r._transform_context = aux_data[0]
-  return r
-
-
-register_pytree_node(Array,
-                     lambda t: ((t.value,), (t._transform_context,)),
-                     _jaxarray_unflatten)
-
-register_pytree_node(Variable,
-                     lambda t: ((t.value,), None),
-                     lambda aux_data, flat_contents: Variable(*flat_contents))
-
-register_pytree_node(TrainVar,
-                     lambda t: ((t.value,), None),
-                     lambda aux_data, flat_contents: TrainVar(*flat_contents))
-
-register_pytree_node(Parameter,
-                     lambda t: ((t.value,), None),
-                     lambda aux_data, flat_contents: Parameter(*flat_contents))

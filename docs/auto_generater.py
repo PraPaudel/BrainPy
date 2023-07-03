@@ -338,7 +338,7 @@ def generate_connect_docs():
 
 def generate_channels_docs():
   _write_subsections_v2(
-    'brainpy._src.dyn.channels',
+    'brainpy._src.channels',
     'brainpy.channels',
     'apis/auto/channels.rst',
     subsections={
@@ -381,11 +381,12 @@ def generate_inputs_docs():
 
 def generate_layers_docs():
   _write_subsections_v2(
-    'brainpy._src.dyn.layers',
-    'brainpy.layers',
-    'apis/auto/layers.rst',
+    'brainpy._src.dnn',
+    'brainpy.dnn',
+    'apis/auto/dnn.rst',
     subsections={
       'base': 'Basic ANN Layer Class',
+      'activations': 'Non-linear Activations',
       'conv': 'Convolutional Layers',
       'dropout': 'Dropout Layers',
       'function': 'Function Layers',
@@ -395,6 +396,22 @@ def generate_layers_docs():
       'pooling': 'Pooling Layers',
       'reservoir': 'Reservoir Layers',
       'rnncells': 'Artificial Recurrent Layers',
+      'interoperation_flax': 'Interoperation with Flax',
+    }
+  )
+
+
+def generate_dyn_docs():
+  _write_subsections_v2(
+    'brainpy.dyn',
+    'brainpy.dyn',
+    'apis/auto/dyn.rst',
+    subsections={
+      'channels': 'Ion Channel Dynamics',
+      'neurons': 'Neuron Dynamics',
+      'synapses': 'Synaptic Dynamics',
+      'projections': 'Synaptic Projections',
+      'others': 'Common Dynamical Models',
     }
   )
 
@@ -419,7 +436,7 @@ def generate_measure_docs():
 
 def generate_neurons_docs():
   _write_subsections_v2(
-    'brainpy._src.dyn.neurons',
+    'brainpy._src.neurons',
     'brainpy.neurons',
     'apis/auto/neurons.rst',
     subsections={
@@ -458,29 +475,15 @@ def generate_running_docs():
 
 def generate_synapses_docs():
   _write_subsections_v2(
-    'brainpy._src.dyn.synapses',
+    'brainpy.synapses',
     'brainpy.synapses',
     'apis/auto/synapses.rst',
     subsections={
-      'abstract_models': 'Abstract Models',
-      'biological_models': 'Biological Models',
-      'delay_couplings': 'Coupling Models',
-      'gap_junction': 'Gap Junction Models',
-      'learning_rules': 'Learning Rule Models',
+      'dynamics': 'Synaptic Dynamics',
+      'synouts': 'Synaptic Output',
+      'synplast': 'Synaptic Plasticity',
     }
   )
-
-
-def generate_synouts_docs():
-  _write_module(module_name='brainpy.synouts',
-                filename='apis/auto/synouts.rst',
-                header='``brainpy.synouts`` module')
-
-
-def generate_synplast_docs():
-  _write_module(module_name='brainpy.synplast',
-                filename='apis/auto/synplast.rst',
-                header='``brainpy.synplast`` module')
 
 
 def generate_brainpy_docs():
@@ -552,25 +555,24 @@ def generate_math_docs():
     'brainpy.math',
     'apis/auto/math.rst',
     subsections={
-      'object_base': ('Basis for Object-oriented Transformations', 'brainpy.math'),
+      'object_base': ('Objects and Variables', 'brainpy.math'),
       'object_transform': ('Object-oriented Transformations', 'brainpy.math'),
-      'operators': ('Brain Dynamics Dedicated Operators', 'brainpy.math'),
+      'environment': ('Environment Settings', 'brainpy.math'),
+      'compat_numpy': ('Dense Operators with NumPy Syntax', 'brainpy.math'),
+      'compat_pytorch': ('Dense Operators with PyTorch Syntax', 'brainpy.math'),
+      'compat_tensorflow': ('Dense Operators with TensorFlow Syntax', 'brainpy.math'),
+      'interoperability': ('Array Interoperability', 'brainpy.math'),
+      'pre_syn_post': ('Operators for Pre-Syn-Post Conversion', 'brainpy.math'),
       'activations': ('Activation Functions', 'brainpy.math'),
       'delayvars': ('Delay Variables', 'brainpy.math'),
-      'environment': ('Environment Settings', 'brainpy.math'),
       'modes': ('Computing Modes', 'brainpy.math'),
-      'arrayinterporate': ('Array Interoperability', 'brainpy.math'),
-      'compat_numpy': ('Array Operators with NumPy Syntax', 'brainpy.math'),
-      'compat_pytorch': ('Array Operators with PyTorch Syntax', 'brainpy.math'),
-      'compat_tensorflow': ('Array Operators with TensorFlow Syntax', 'brainpy.math'),
-      'surrogate': ('``brainpy.math.surrogate`` module: Surrogate Gradient Functions',
-                    'brainpy.math.surrogate'),
-      'random': ('``brainpy.math.random`` module: Random Number Generations',
-                 'brainpy.math.random'),
-      'linalg': ('``brainpy.math.linalg`` module: Linear algebra',
-                 'brainpy.math.linalg'),
-      'fft': ('``brainpy.math.fft`` module: Discrete Fourier Transform',
-              'brainpy.math.fft'),
+      'sparse': ('``brainpy.math.sparse`` module: Sparse Operators', 'brainpy.math.sparse'),
+      'event': ('``brainpy.math.event`` module: Event-driven Operators', 'brainpy.math.event'),
+      'jitconn': ('``brainpy.math.jitconn`` module: Just-In-Time Connectivity Operators', 'brainpy.math.jitconn'),
+      'surrogate': ('``brainpy.math.surrogate`` module: Surrogate Gradient Functions', 'brainpy.math.surrogate'),
+      'random': ('``brainpy.math.random`` module: Random Number Generations', 'brainpy.math.random'),
+      'linalg': ('``brainpy.math.linalg`` module: Linear algebra', 'brainpy.math.linalg'),
+      'fft': ('``brainpy.math.fft`` module: Discrete Fourier Transform', 'brainpy.math.fft'),
     }
   )
 

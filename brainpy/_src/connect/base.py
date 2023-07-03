@@ -9,6 +9,8 @@ import numpy as onp
 from brainpy import tools, math as bm
 from brainpy.errors import ConnectorError
 
+import textwrap
+
 __all__ = [
   # the connection types
   'CONN_MAT',
@@ -27,6 +29,9 @@ __all__ = [
   'mat2coo', 'mat2csc', 'mat2csr',
   'csr2csc', 'csr2mat', 'csr2coo',
   'coo2csr', 'coo2csc', 'coo2mat',
+
+  # visualize
+  'visualizeMat',
 ]
 
 CONN_MAT = 'conn_mat'
@@ -719,3 +724,16 @@ def coo2csc(coo, post_num, data=None):
   else:
     data_new = data[sort_ids]
     return pre_ids_new, indptr_new, data_new
+
+
+def visualizeMat(mat, description):
+  try:
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+  except (ModuleNotFoundError, ImportError):
+    print('Please install seaborn and matplotlib for this function')
+    return
+  sns.heatmap(mat, cmap='viridis')
+  warpped_title = textwrap.fill(description, width=60)
+  plt.title(warpped_title)
+  plt.show()
