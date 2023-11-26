@@ -6,6 +6,7 @@ import brainpy.math as bm
 from absl.testing import parameterized
 from brainpy._src.dyn.neurons import hh
 
+
 class Test_HH(parameterized.TestCase):
   def test_HH(self):
     model = hh.HH(size=1)
@@ -58,8 +59,8 @@ class Test_HH(parameterized.TestCase):
   def test_MorrisLecar(self):
     model = hh.MorrisLecar(size=1)
     runner = bp.DSRunner(model,
-                          monitors=['V', 'W', 'spike'],
-                          progress_bar=False)
+                         monitors=['V', 'W', 'spike'],
+                         progress_bar=False)
     runner.run(10.)
     self.assertTupleEqual(runner.mon['V'].shape, (100, 1))
     self.assertTupleEqual(runner.mon['W'].shape, (100, 1))
@@ -68,8 +69,8 @@ class Test_HH(parameterized.TestCase):
   def test_MorrisLecar_batching_mode(self):
     model = hh.MorrisLecar(size=10, mode=bm.batching_mode)
     runner = bp.DSRunner(model,
-                          monitors=['V', 'W', 'spike'],
-                          progress_bar=False)
+                         monitors=['V', 'W', 'spike'],
+                         progress_bar=False)
     runner.run(10.)
     self.assertTupleEqual(runner.mon['V'].shape, (1, 100, 10))
     self.assertTupleEqual(runner.mon['W'].shape, (1, 100, 10))
@@ -78,8 +79,8 @@ class Test_HH(parameterized.TestCase):
   def test_MorrisLecarLTC(self):
     model = hh.MorrisLecarLTC(size=1)
     runner = bp.DSRunner(model,
-                          monitors=['V', 'W', 'spike'],
-                          progress_bar=False)
+                         monitors=['V', 'W', 'spike'],
+                         progress_bar=False)
     runner.run(10.)
     self.assertTupleEqual(runner.mon['V'].shape, (100, 1))
     self.assertTupleEqual(runner.mon['W'].shape, (100, 1))
@@ -88,18 +89,18 @@ class Test_HH(parameterized.TestCase):
   def test_MorrisLecarLTC_batching_mode(self):
     model = hh.MorrisLecarLTC(size=10, mode=bm.batching_mode)
     runner = bp.DSRunner(model,
-                          monitors=['V', 'W', 'spike'],
-                          progress_bar=False)
+                         monitors=['V', 'W', 'spike'],
+                         progress_bar=False)
     runner.run(10.)
     self.assertTupleEqual(runner.mon['V'].shape, (1, 100, 10))
     self.assertTupleEqual(runner.mon['W'].shape, (1, 100, 10))
     self.assertTupleEqual(runner.mon['spike'].shape, (1, 100, 10))
 
   def test_WangBuzsakiModel(self):
-    model = hh.WangBuzsakiModel(size=1)
+    model = hh.WangBuzsakiHH(size=1)
     runner = bp.DSRunner(model,
-                          monitors=['V', 'n', 'h', 'spike'],
-                          progress_bar=False)
+                         monitors=['V', 'n', 'h', 'spike'],
+                         progress_bar=False)
     runner.run(10.)
     self.assertTupleEqual(runner.mon['V'].shape, (100, 1))
     self.assertTupleEqual(runner.mon['n'].shape, (100, 1))
@@ -107,10 +108,10 @@ class Test_HH(parameterized.TestCase):
     self.assertTupleEqual(runner.mon['spike'].shape, (100, 1))
 
   def test_WangBuzsakiModel_batching_mode(self):
-    model = hh.WangBuzsakiModel(size=10, mode=bm.batching_mode)
+    model = hh.WangBuzsakiHH(size=10, mode=bm.batching_mode)
     runner = bp.DSRunner(model,
-                          monitors=['V', 'n', 'h', 'spike'],
-                          progress_bar=False)
+                         monitors=['V', 'n', 'h', 'spike'],
+                         progress_bar=False)
     runner.run(10.)
     self.assertTupleEqual(runner.mon['V'].shape, (1, 100, 10))
     self.assertTupleEqual(runner.mon['n'].shape, (1, 100, 10))
@@ -118,10 +119,10 @@ class Test_HH(parameterized.TestCase):
     self.assertTupleEqual(runner.mon['spike'].shape, (1, 100, 10))
 
   def test_WangBuzsakiModelLTC(self):
-    model = hh.WangBuzsakiModelLTC(size=1)
+    model = hh.WangBuzsakiHHLTC(size=1)
     runner = bp.DSRunner(model,
-                          monitors=['V', 'n', 'h', 'spike'],
-                          progress_bar=False)
+                         monitors=['V', 'n', 'h', 'spike'],
+                         progress_bar=False)
     runner.run(10.)
     self.assertTupleEqual(runner.mon['V'].shape, (100, 1))
     self.assertTupleEqual(runner.mon['n'].shape, (100, 1))
@@ -129,10 +130,10 @@ class Test_HH(parameterized.TestCase):
     self.assertTupleEqual(runner.mon['spike'].shape, (100, 1))
 
   def test_WangBuzsakiModelLTC_batching_mode(self):
-    model = hh.WangBuzsakiModelLTC(size=10, mode=bm.batching_mode)
+    model = hh.WangBuzsakiHHLTC(size=10, mode=bm.batching_mode)
     runner = bp.DSRunner(model,
-                          monitors=['V', 'n', 'h', 'spike'],
-                          progress_bar=False)
+                         monitors=['V', 'n', 'h', 'spike'],
+                         progress_bar=False)
     runner.run(10.)
     self.assertTupleEqual(runner.mon['V'].shape, (1, 100, 10))
     self.assertTupleEqual(runner.mon['n'].shape, (1, 100, 10))

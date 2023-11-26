@@ -1,20 +1,24 @@
 # -*- coding: utf-8 -*-
 
 
+import numbers
 from typing import Dict, Optional, Union, Callable
 
 import jax
 import jax.numpy as jnp
+import numba
+import numpy as np
 
 from brainpy import math as bm
 from brainpy._src import connect, initialize as init
 from brainpy._src.context import share
-from brainpy.algorithms import OnlineAlgorithm, OfflineAlgorithm
+from brainpy._src.dnn.base import Layer
+from brainpy._src.mixin import SupportOnline, SupportOffline, SupportSTDP
 from brainpy.check import is_initializer
+from brainpy.connect import csr2csc
 from brainpy.errors import MathError
 from brainpy.initialize import XavierNormal, ZeroInit, Initializer, parameter
 from brainpy.types import ArrayType, Sharding
-from .base import Layer
 
 __all__ = [
   'Dense', 'Linear',
@@ -28,14 +32,14 @@ __all__ = [
 ]
 
 
-class Dense(Layer):
+class Dense(Layer, SupportSTDP, SupportOnline, SupportOffline):
   r"""A linear transformation applied over the last dimension of the input.
 
   Mathematically, this node can be defined as:
 
   .. math::
 
-     y = x  \cdot W + b
+     y = x  \cdot weight + b
 
   Parameters
   ----------
@@ -51,20 +55,14 @@ class Dense(Layer):
     Enable training this node or not. (default True)
   """
 
-  online_fit_by: Optional[OnlineAlgorithm]
-  '''Online fitting method.'''
-
-  offline_fit_by: Optional[OfflineAlgorithm]
-  '''Offline fitting method.'''
-
   def __init__(
       self,
       num_in: int,
       num_out: int,
       W_initializer: Union[Initializer, Callable, ArrayType] = XavierNormal(),
       b_initializer: Optional[Union[Initializer, Callable, ArrayType]] = ZeroInit(),
-      mode: bm.Mode = None,
-      name: str = None,
+      mode: Optional[bm.Mode] = None,
+      name: Optional[str] = None,
   ):
     super(Dense, self).__init__(mode=mode, name=name)
 
@@ -79,13 +77,13 @@ class Dense(Layer):
                        f'a positive integer. Received: num_out={num_out}')
 
     # weight initializer
-    self.weight_initializer = W_initializer
+    self.W_initializer = W_initializer
     self.bias_initializer = b_initializer
     is_initializer(W_initializer, 'weight_initializer')
     is_initializer(b_initializer, 'bias_initializer', allow_none=True)
 
     # parameter initialization
-    W = parameter(self.weight_initializer, (num_in, self.num_out))
+    W = parameter(self.W_initializer, (num_in, self.num_out))
     b = parameter(self.bias_initializer, (self.num_out,))
     if isinstance(self.mode, bm.TrainingMode):
       W = bm.TrainVar(W)
@@ -94,8 +92,8 @@ class Dense(Layer):
     self.b = b
 
     # fitting parameters
-    self.online_fit_by = None
-    self.offline_fit_by = None
+    self.online_fit_by = None  # support online training
+    self.offline_fit_by = None  # support offline training
     self.fit_record = dict()
 
   def __repr__(self):
@@ -203,6 +201,26 @@ class Dense(Layer):
       self.W.value = Wff
       self.b.value = bias[0]
 
+  def stdp_update(
+      self,
+      on_pre: Dict = None,
+      on_post: Dict = None,
+      w_min: numbers.Number = None,
+      w_max: numbers.Number = None
+  ):
+    if isinstance(self.W, float):
+      raise ValueError(f'Cannot update the weight of a constant node.')
+    if not isinstance(self.W, bm.Variable):
+      self.tracing_variable('W', self.W, self.W.shape)
+    if on_pre is not None:
+      spike = on_pre['spike']
+      trace = on_pre['trace']
+      self.W.value = dense_on_pre(self.W.value, spike, trace, w_min, w_max)
+    if on_post is not None:
+      spike = on_post['spike']
+      trace = on_post['trace']
+      self.W.value = dense_on_post(self.W.value, spike, trace, w_min, w_max)
+
 
 Linear = Dense
 
@@ -218,7 +236,47 @@ class Identity(Layer):
     return x
 
 
-class AllToAll(Layer):
+@numba.njit(nogil=True, fastmath=True, parallel=False)
+def _cpu_dense_on_pre(weight, spike, trace, w_min, w_max, out_w):
+  out_w[:] = weight
+  for i in numba.prange(spike.shape[0]):
+    if spike[i]:
+      out_w[i] = np.clip(out_w[i] + trace, w_min, w_max)
+
+
+dense_on_pre_prim = bm.XLACustomOp(_cpu_dense_on_pre)
+
+
+def dense_on_pre(weight, spike, trace, w_min, w_max):
+  if w_min is None:
+    w_min = -np.inf
+  if w_max is None:
+    w_max = np.inf
+  return dense_on_pre_prim(weight, spike, trace, w_min, w_max,
+                           outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)])[0]
+
+
+@numba.njit(nogil=True, fastmath=True, parallel=False)
+def _cpu_dense_on_post(weight, spike, trace, w_min, w_max, out_w):
+  out_w[:] = weight
+  for i in numba.prange(spike.shape[0]):
+    if spike[i]:
+      out_w[:, i] = np.clip(out_w[:, i] + trace, w_min, w_max)
+
+
+dense_on_post_prim = bm.XLACustomOp(_cpu_dense_on_post)
+
+
+def dense_on_post(weight, spike, trace, w_min, w_max):
+  if w_min is None:
+    w_min = -np.inf
+  if w_max is None:
+    w_max = np.inf
+  return dense_on_post_prim(weight, spike, trace, w_min, w_max,
+                            outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)])[0]
+
+
+class AllToAll(Layer, SupportSTDP):
   """Synaptic matrix multiplication with All2All connections.
 
   Args:
@@ -280,8 +338,28 @@ class AllToAll(Layer):
         post_val = pre_val @ self.weight
     return post_val
 
+  def stdp_update(
+      self,
+      on_pre: Dict = None,
+      on_post: Dict = None,
+      w_min: numbers.Number = None,
+      w_max: numbers.Number = None
+  ):
+    if isinstance(self.weight, float):
+      raise ValueError(f'Cannot update the weight of a constant node.')
+    if not isinstance(self.weight, bm.Variable):
+      self.tracing_variable('weight', self.weight, self.weight.shape)
+    if on_pre is not None:
+      spike = on_pre['spike']
+      trace = on_pre['trace']
+      self.weight.value = dense_on_pre(self.weight.value, spike, trace, w_min, w_max)
+    if on_post is not None:
+      spike = on_post['spike']
+      trace = on_post['trace']
+      self.weight.value = dense_on_post(self.weight.value, spike, trace, w_min, w_max)
 
-class OneToOne(Layer):
+
+class OneToOne(Layer, SupportSTDP):
   """Synaptic matrix multiplication with One2One connection.
 
   Args:
@@ -314,9 +392,29 @@ class OneToOne(Layer):
   def update(self, pre_val):
     return pre_val * self.weight
 
+  def stdp_update(
+      self,
+      on_pre: Dict = None,
+      on_post: Dict = None,
+      w_min: numbers.Number = None,
+      w_max: numbers.Number = None
+  ):
+    if isinstance(self.weight, float):
+      raise ValueError(f'Cannot update the weight of a constant node.')
+    if not isinstance(self.weight, bm.Variable):
+      self.tracing_variable('weight', self.weight, self.weight.shape)
+    if on_pre is not None:
+      spike = on_pre['spike']
+      trace = on_pre['trace']
+      self.weight.value += spike * trace
+    if on_post is not None:
+      spike = on_post['spike']
+      trace = on_post['trace']
+      self.weight.value += spike * trace
 
-class MaskedLinear(Layer):
-  r"""Synaptic matrix multiplication with dense computation.
+
+class MaskedLinear(Layer, SupportSTDP):
+  r"""Synaptic matrix multiplication with masked dense computation.
 
   It performs the computation of:
 
@@ -327,9 +425,14 @@ class MaskedLinear(Layer):
   where :math:`y` is the postsynaptic value, :math:`x` the presynaptic value,
   :math:`M` the synaptic weight using a dense matrix.
 
+  >>> import brainpy as bp
+  >>> l = bp.dnn.MaskedLinear(bp.conn.FixedProb(0.1, pre=100, post=100),
+  >>>                         weight=0.1)
+
   Args:
-    mask: TwoEndConnector. The connection.
+    conn: TwoEndConnector. The connection.
     weight: Synaptic weights. Can be a scalar, array, or callable function.
+    mask_fun: Masking function.
     sharding: The sharding strategy. 
     mode: The synaptic computing mode.
     name: The synapse model name.
@@ -337,20 +440,22 @@ class MaskedLinear(Layer):
 
   def __init__(
       self,
-      mask: connect.TwoEndConnector,
+      conn: connect.TwoEndConnector,
       weight: Union[float, ArrayType, Callable],
+      mask_fun: Callable = Identity(),
       sharding: Optional[Sharding] = None,
       mode: Optional[bm.Mode] = None,
       name: Optional[str] = None,
   ):
     super().__init__(name=name, mode=mode)
 
-    assert isinstance(mask, connect.TwoEndConnector)
-    self.conn = mask
+    assert isinstance(conn, connect.TwoEndConnector)
+    self.conn = conn
     self.sharding = sharding
+    self.mask_fun = mask_fun
 
     # weight
-    weight = init.parameter(weight, (mask.pre_num, mask.post_num), sharding=sharding)
+    weight = init.parameter(weight, (conn.pre_num, conn.post_num), sharding=sharding)
     if isinstance(self.mode, bm.TrainingMode):
       weight = bm.TrainVar(weight)
     self.weight = weight
@@ -359,10 +464,86 @@ class MaskedLinear(Layer):
     self.mask = bm.sharding.partition(self.conn.require('conn_mat'), sharding=sharding)
 
   def update(self, x):
-    return x @ (self.weight * self.mask)
+    return x @ self.mask_fun(self.weight * self.mask)
+
+  def stdp_update(
+      self,
+      on_pre: Dict = None,
+      on_post: Dict = None,
+      w_min: numbers.Number = None,
+      w_max: numbers.Number = None
+  ):
+    if isinstance(self.weight, float):
+      raise ValueError(f'Cannot update the weight of a constant node.')
+    if not isinstance(self.weight, bm.Variable):
+      self.tracing_variable('weight', self.weight, self.weight.shape)
+    if on_pre is not None:
+      spike = on_pre['spike']
+      trace = on_pre['trace']
+      self.weight.value = dense_on_pre(self.weight.value, spike, trace, w_min, w_max)
+    if on_post is not None:
+      spike = on_post['spike']
+      trace = on_post['trace']
+      self.weight.value = dense_on_post(self.weight.value, spike, trace, w_min, w_max)
 
 
-class CSRLinear(Layer):
+class _CSRLayer(Layer, SupportSTDP):
+  def __init__(
+      self,
+      conn: connect.TwoEndConnector,
+      weight: Union[float, ArrayType, Callable],
+      sharding: Optional[Sharding] = None,
+      mode: Optional[bm.Mode] = None,
+      name: Optional[str] = None,
+      transpose: bool = True,
+  ):
+    super().__init__(name=name, mode=mode)
+
+    assert isinstance(conn, connect.TwoEndConnector)
+    assert sharding is None, 'Currently this model does not support sharding.'
+    self.conn = conn
+    self.sharding = sharding
+    self.transpose = transpose
+
+    # connection
+    self.indices, self.indptr = self.conn.require('csr')
+
+    # weight
+    weight = init.parameter(weight, (self.indices.size,))
+    if isinstance(self.mode, bm.TrainingMode):
+      weight = bm.TrainVar(weight)
+    self.weight = weight
+
+  def stdp_update(
+      self,
+      on_pre: Dict = None,
+      on_post: Dict = None,
+      w_min: numbers.Number = None,
+      w_max: numbers.Number = None
+  ):
+    if bm.isscalar(self.weight):
+      raise ValueError(f'When using STDP to update synaptic weights, the weight cannot be a scalar.')
+    if self.weight.shape != self.indices.shape:
+      raise ValueError(f'The shape of weight should be the same as the shape of sparse weight {self.weight.shape}.')
+    if not isinstance(self.weight, bm.Variable):
+      self.tracing_variable('weight', self.weight, self.weight.shape)
+    if on_pre is not None:   # update on presynaptic spike
+      spike = on_pre['spike']
+      trace = on_pre['trace']
+      self.weight.value = csr_on_pre_update(self.weight.value, self.indices, self.indptr, spike, trace, w_min, w_max)
+    if on_post is not None:  # update on postsynaptic spike
+      if not hasattr(self, '_pre_ids'):
+        with jax.ensure_compile_time_eval():
+          self._pre_ids, self._post_indptr, self.w_indices = csr2csc(
+            [self.indices, self.indptr], self.conn.post_num, data=np.arange(self.weight.size)
+          )
+      spike = on_post['spike']
+      trace = on_post['trace']
+      self.weight.value = csc_on_post_update(self.weight.value, self._pre_ids, self._post_indptr,
+                                             self.w_indices, spike, trace, w_min, w_max)
+
+
+class CSRLinear(_CSRLayer):
   r"""Synaptic matrix multiplication with CSR sparse computation.
 
   It performs the computation of:
@@ -392,23 +573,8 @@ class CSRLinear(Layer):
       method: str = 'cusparse',
       transpose: bool = True,
   ):
-    super().__init__(name=name, mode=mode)
-
-    assert isinstance(conn, connect.TwoEndConnector)
-    assert sharding is None, 'Currently this model does not support sharding.'
-    self.conn = conn
-    self.sharding = sharding
+    super().__init__(name=name, mode=mode, conn=conn, weight=weight, sharding=sharding, transpose=transpose)
     self.method = method
-    self.transpose = transpose
-
-    # connection
-    self.indices, self.indptr = self.conn.require('csr')
-
-    # weight
-    weight = init.parameter(weight, (self.indices.size,))
-    if isinstance(self.mode, bm.TrainingMode):
-      weight = bm.TrainVar(weight)
-    self.weight = weight
 
   def update(self, x):
     if x.ndim == 1:
@@ -431,42 +597,7 @@ class CSRLinear(Layer):
                            method=self.method)
 
 
-class CSCLinear(Layer):
-  r"""Synaptic matrix multiplication with CSC sparse computation.
-
-  It performs the computation of:
-
-  .. math::
-
-     y = x @ M
-
-  where :math:`y` is the postsynaptic value, :math:`x` the presynaptic value,
-  :math:`M` the synaptic weight using a CSC sparse matrix.
-
-  Args:
-    conn: TwoEndConnector. The connection.
-    weight: Synaptic weights. Can be a scalar, array, or callable function.
-    sharding: The sharding strategy. 
-    mode: The synaptic computing mode.
-    name: The synapse model name.
-  """
-
-  def __init__(
-      self,
-      conn: connect.TwoEndConnector,
-      weight: Union[float, ArrayType, Callable],
-      sharding: Optional[Sharding] = None,
-      mode: Optional[bm.Mode] = None,
-      name: Optional[str] = None,
-  ):
-    super().__init__(name=name, mode=mode)
-
-    assert isinstance(conn, connect.TwoEndConnector)
-    self.conn = conn
-    self.sharding = sharding
-
-
-class EventCSRLinear(Layer):
+class EventCSRLinear(_CSRLayer):
   r"""Synaptic matrix multiplication with event CSR sparse computation.
 
   It performs the computation of:
@@ -495,22 +626,7 @@ class EventCSRLinear(Layer):
       name: Optional[str] = None,
       transpose: bool = True,
   ):
-    super().__init__(name=name, mode=mode)
-
-    assert isinstance(conn, connect.TwoEndConnector)
-    assert sharding is None, 'Currently this model does not support sharding.'
-    self.conn = conn
-    self.sharding = sharding
-    self.transpose = transpose
-
-    # connection
-    self.indices, self.indptr = self.conn.require('csr')
-
-    # weight
-    weight = init.parameter(weight, (self.indices.size,))
-    if isinstance(self.mode, bm.TrainingMode):
-      weight = bm.TrainVar(weight)
-    self.weight = weight
+    super().__init__(name=name, mode=mode, conn=conn, weight=weight, sharding=sharding, transpose=transpose)
 
   def update(self, x):
     if x.ndim == 1:
@@ -529,6 +645,91 @@ class EventCSRLinear(Layer):
     return bm.event.csrmv(self.weight, self.indices, self.indptr, x,
                           shape=(self.conn.pre_num, self.conn.post_num),
                           transpose=self.transpose)
+
+
+@numba.njit(nogil=True, fastmath=True, parallel=False)
+def _cpu_csr_on_pre_update(w, indices, indptr, spike, trace, w_min, w_max, out_w):
+  out_w[:] = w
+  w_min = w_min[()]
+  w_max = w_max[()]
+  for i in numba.prange(spike.shape[0]):  # pre id
+    if spike[i]:
+      for k in range(indptr[i], indptr[i + 1]):  # synapse id
+        j = indices[k]  # post id
+        # out_w[k] = np.clip(out_w[k] + trace[j], w_min, w_max)
+        out_w[k] = np.minimum(np.maximum(out_w[k] + trace[j], w_min), w_max)
+
+
+csr_on_pre_update_prim = bm.XLACustomOp(_cpu_csr_on_pre_update)
+
+
+def csr_on_pre_update(w, indices, indptr, spike, trace, w_min=None, w_max=None):
+  if w_min is None:
+    w_min = -np.inf
+  if w_max is None:
+    w_max = np.inf
+  return csr_on_pre_update_prim(w, indices, indptr, spike, trace, w_min, w_max,
+                                outs=[jax.ShapeDtypeStruct(w.shape, w.dtype)])[0]
+
+
+@numba.njit(nogil=True, fastmath=True, parallel=False)
+def _cpu_csc_on_pre_update(w, post_ids, indptr, w_ids, spike, trace, w_min, w_max, out_w):
+  out_w[:] = w
+  w_min = w_min[()]
+  w_max = w_max[()]
+  for i in numba.prange(spike.shape[0]):  # post id
+    if spike[i]:
+      for k in range(indptr[i], indptr[i + 1]):
+        j = post_ids[k]  # pre id
+        l = w_ids[k]  # syn id
+        out_w[l] = np.minimum(np.maximum(out_w[l] + trace[j], w_min), w_max)
+
+
+csc_on_pre_update_prim = bm.XLACustomOp(_cpu_csc_on_pre_update)
+
+
+def csc_on_post_update(w, post_ids, indptr, w_ids, spike, trace, w_min=None, w_max=None):
+  if w_min is None:
+    w_min = -np.inf
+  if w_max is None:
+    w_max = np.inf
+  return csc_on_pre_update_prim(w, post_ids, indptr, w_ids, spike, trace, w_min, w_max,
+                                outs=[jax.ShapeDtypeStruct(w.shape, w.dtype)])[0]
+
+
+class CSCLinear(Layer):
+  r"""Synaptic matrix multiplication with CSC sparse computation.
+
+  It performs the computation of:
+
+  .. math::
+
+     y = x @ M
+
+  where :math:`y` is the postsynaptic value, :math:`x` the presynaptic value,
+  :math:`M` the synaptic weight using a CSC sparse matrix.
+
+  Args:
+    conn: TwoEndConnector. The connection.
+    weight: Synaptic weights. Can be a scalar, array, or callable function.
+    sharding: The sharding strategy.
+    mode: The synaptic computing mode.
+    name: The synapse model name.
+  """
+
+  def __init__(
+      self,
+      conn: connect.TwoEndConnector,
+      weight: Union[float, ArrayType, Callable],
+      sharding: Optional[Sharding] = None,
+      mode: Optional[bm.Mode] = None,
+      name: Optional[str] = None,
+  ):
+    super().__init__(name=name, mode=mode)
+
+    assert isinstance(conn, connect.TwoEndConnector)
+    self.conn = conn
+    self.sharding = sharding
 
 
 class BcsrMM(Layer):
@@ -635,7 +836,7 @@ class JitFPHomoLinear(Layer):
       num_out: int,
       prob: float,
       weight: float,
-      seed: int,
+      seed: Optional[int] = None,
       sharding: Optional[Sharding] = None,
       mode: Optional[bm.Mode] = None,
       name: Optional[str] = None,
@@ -647,7 +848,7 @@ class JitFPHomoLinear(Layer):
     self.prob = prob
     self.sharding = sharding
     self.transpose = transpose
-    self.seed = seed
+    self.seed = np.random.randint(0, 100000) if seed is None else seed
     self.atomic = atomic
     self.num_in = num_in
     self.num_out = num_out
@@ -716,7 +917,7 @@ class JitFPUniformLinear(Layer):
       prob: float,
       w_low: float,
       w_high: float,
-      seed: int,
+      seed: Optional[int] = None,
       sharding: Optional[Sharding] = None,
       mode: Optional[bm.Mode] = None,
       name: Optional[str] = None,
@@ -728,7 +929,7 @@ class JitFPUniformLinear(Layer):
     self.prob = prob
     self.sharding = sharding
     self.transpose = transpose
-    self.seed = seed
+    self.seed = np.random.randint(0, 100000) if seed is None else seed
     self.atomic = atomic
     self.num_in = num_in
     self.num_out = num_out
@@ -796,7 +997,7 @@ class JitFPNormalLinear(Layer):
       prob: float,
       w_mu: float,
       w_sigma: float,
-      seed: int,
+      seed: Optional[int] = None,
       sharding: Optional[Sharding] = None,
       transpose: bool = False,
       atomic: bool = False,
@@ -808,7 +1009,7 @@ class JitFPNormalLinear(Layer):
     self.prob = prob
     self.sharding = sharding
     self.transpose = transpose
-    self.seed = seed
+    self.seed = np.random.randint(0, 100000) if seed is None else seed
     self.atomic = atomic
     self.num_in = num_in
     self.num_out = num_out
@@ -874,7 +1075,7 @@ class EventJitFPHomoLinear(Layer):
       num_out: int,
       prob: float,
       weight: float,
-      seed: int,
+      seed: Optional[int] = None,
       sharding: Optional[Sharding] = None,
       mode: Optional[bm.Mode] = None,
       name: Optional[str] = None,
@@ -886,7 +1087,7 @@ class EventJitFPHomoLinear(Layer):
     self.prob = prob
     self.sharding = sharding
     self.transpose = transpose
-    self.seed = seed
+    self.seed = np.random.randint(0, 1000000) if seed is None else seed
     self.atomic = atomic
     self.num_in = num_in
     self.num_out = num_out
@@ -955,7 +1156,7 @@ class EventJitFPUniformLinear(Layer):
       prob: float,
       w_low: float,
       w_high: float,
-      seed: int,
+      seed: Optional[int] = None,
       sharding: Optional[Sharding] = None,
       mode: Optional[bm.Mode] = None,
       name: Optional[str] = None,
@@ -967,7 +1168,7 @@ class EventJitFPUniformLinear(Layer):
     self.prob = prob
     self.sharding = sharding
     self.transpose = transpose
-    self.seed = seed
+    self.seed = np.random.randint(0, 100000) if seed is None else seed
     self.atomic = atomic
     self.num_in = num_in
     self.num_out = num_out
@@ -1035,7 +1236,7 @@ class EventJitFPNormalLinear(Layer):
       prob: float,
       w_mu: float,
       w_sigma: float,
-      seed: int,
+      seed: Optional[int] = None,
       sharding: Optional[Sharding] = None,
       transpose: bool = False,
       atomic: bool = False,
@@ -1047,7 +1248,7 @@ class EventJitFPNormalLinear(Layer):
     self.prob = prob
     self.sharding = sharding
     self.transpose = transpose
-    self.seed = seed
+    self.seed = np.random.randint(0, 100000) if seed is None else seed
     self.atomic = atomic
     self.num_in = num_in
     self.num_out = num_out

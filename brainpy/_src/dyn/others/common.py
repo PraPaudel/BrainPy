@@ -69,15 +69,16 @@ class Leaky(NeuDyn):
   def derivative(self, x, t):
     return -x / self.tau
 
-  def reset_state(self, batch_size=None):
+  def reset_state(self, batch_size=None, **kwargs):
     self.x = self.init_variable(bm.zeros, batch_size)
 
   def update(self, inp=None):
     t = share.load('t')
     dt = share.load('dt')
     self.x.value = self.integral(self.x.value, t, dt)
-    if inp is not None:
-      self.x += inp
+    if inp is None: inp = 0.
+    inp = self.sum_inputs(self.x.value, init=inp)
+    self.x += inp
     return self.x.value
 
   def return_info(self):
@@ -145,7 +146,7 @@ class Integrator(NeuDyn):
   def derivative(self, V, t, I_ext):
     return (-V + I_ext) / self.tau
 
-  def reset_state(self, batch_size=None):
+  def reset_state(self, batch_size=None, **kwargs):
     self.x = self.init_variable(self._x_initializer, batch_size)
 
   def update(self, x=None):

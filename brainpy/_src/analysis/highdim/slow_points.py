@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 
+import inspect
 import math
 import time
+import warnings
 from typing import Callable, Union, Dict, Sequence, Tuple
 
 import jax.numpy as jnp
@@ -14,10 +16,13 @@ import brainpy._src.math as bm
 from brainpy import optim, losses
 from brainpy._src.analysis import utils, base, constants
 from brainpy._src.dynsys import DynamicalSystem
+from brainpy._src.context import share
+from brainpy._src.helpers import clear_input
 from brainpy._src.runners import check_and_format_inputs, _f_ops
-from brainpy._src.tools.dicts import DotDict
 from brainpy.errors import AnalyzerError, UnsupportedError
 from brainpy.types import ArrayType
+from brainpy._src.deprecations import _input_deprecate_msg
+
 
 __all__ = [
   'SlowPointFinder',
@@ -123,7 +128,7 @@ class SlowPointFinder(base.DSAnalyzer):
       f_loss_batch: Callable = None,
       fun_inputs: Callable = None,
   ):
-    super(SlowPointFinder, self).__init__()
+    super().__init__()
 
     # static arguments
     if not isinstance(args, tuple):
@@ -514,7 +519,7 @@ class SlowPointFinder(base.DSAnalyzer):
     # Compute pairwise distances between all fixed points.
     distances = np.asarray(utils.euclidean_distance_jax(self.fixed_points, num_fps))
 
-    # Find second smallest element in each column of the pairwise distance matrix.
+    # Find the second smallest element in each column of the pairwise distance matrix.
     # This corresponds to the closest neighbor for each fixed point.
     closest_neighbor = np.partition(distances, kth=1, axis=0)[1]
 
@@ -636,11 +641,16 @@ class SlowPointFinder(base.DSAnalyzer):
                              'L': L})
     return decompositions
 
-  def _step_func_input(self, shared):
+  def _step_func_input(self):
     if self._inputs is None:
       return
     elif callable(self._inputs):
-      self._inputs(shared)
+      try:
+        ba = inspect.signature(self._inputs).bind(dict())
+        self._inputs(share.get_shargs())
+        warnings.warn(_input_deprecate_msg, UserWarning)
+      except TypeError:
+        self._inputs()
     else:
       for ops, values in self._inputs['fixed'].items():
         for var, data in values:
@@ -650,7 +660,7 @@ class SlowPointFinder(base.DSAnalyzer):
           raise UnsupportedError
       for ops, values in self._inputs['functional'].items():
         for var, data in values:
-          _f_ops(ops, var, data(shared))
+          _f_ops(ops, var, data(share.get_shargs()))
       for ops, values in self._inputs['iterated'].items():
         if len(values) > 0:
           raise UnsupportedError
@@ -732,9 +742,10 @@ class SlowPointFinder(base.DSAnalyzer):
   ):
     if dt is None: dt = bm.get_dt()
     if t is None: t = 0.
-    shared = DotDict(t=t, dt=dt, i=0)
 
     def f_cell(h: Dict):
+      share.save(t=t, i=0, dt=dt)
+
       # update target variables
       for k, v in self.target_vars.items():
         v.value = (bm.asarray(h[k], dtype=v.dtype)
@@ -746,12 +757,11 @@ class SlowPointFinder(base.DSAnalyzer):
         v.value = self.excluded_data[k]
 
       # add inputs
-      target.clear_input()
-      self._step_func_input(shared)
+      clear_input(target)
+      self._step_func_input()
 
       # call update functions
-      args = (shared,) + self.args
-      target(*args)
+      target(*self.args)
 
       # get new states
       new_h = {k: (v.value if (v.batch_axis is None) else jnp.squeeze(v.value, axis=v.batch_axis))

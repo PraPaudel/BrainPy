@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 
 
-import math
 from functools import partial
 from typing import Tuple, Optional, Union
 
@@ -12,15 +11,11 @@ from jax.core import ShapedArray, Primitive
 from jax.interpreters import xla, ad
 from jax.lib import xla_client
 
+from brainpy._src.dependency_check import import_brainpylib_gpu_ops, import_brainpylib_cpu_ops
 from brainpy._src.math.interoperability import as_jax
 from brainpy._src.math.ndarray import Array, _get_dtype
-from brainpy._src.math.op_registers import register_general_batching
-from brainpy.errors import GPUOperatorNotFound, MathError
-
-try:
-  from brainpylib import gpu_ops
-except ImportError:
-  gpu_ops = None
+from brainpy._src.math.op_register import register_general_batching
+from brainpy.errors import GPUOperatorNotFound
 
 __all__ = [
   'mv_prob_homo',
@@ -94,7 +89,7 @@ def mv_prob_homo(
   with jax.ensure_compile_time_eval():
     if seed is None:
       seed = int(np.random.randint(0, int(1e8)))
-  seed = jnp.atleast_1d(as_jax(seed))
+  seed = jnp.atleast_1d(as_jax(seed, dtype=jnp.int32))
   return mv_prob_homo_p.bind(vector,
                              weight,
                              clen,
@@ -174,7 +169,7 @@ def mv_prob_uniform(
   with jax.ensure_compile_time_eval():
     if seed is None:
       seed = int(np.random.randint(0, int(1e8)))
-  seed = jnp.atleast_1d(as_jax(seed))
+  seed = jnp.atleast_1d(as_jax(seed, dtype=jnp.int32))
   return mv_prob_uniform_p.bind(vector,
                                 w_low,
                                 w_high,
@@ -254,7 +249,7 @@ def mv_prob_normal(
   with jax.ensure_compile_time_eval():
     if seed is None:
       seed = int(np.random.randint(0, int(1e8)))
-  seed = jnp.atleast_1d(as_jax(seed))
+  seed = jnp.atleast_1d(as_jax(seed, dtype=jnp.int32))
   return mv_prob_normal_p.bind(vector,
                                w_mu,
                                w_sigma,
@@ -304,6 +299,7 @@ def _matvec_prob_homo_abstract(
 def _matvec_prob_homo_cpu_translation(
     c, vector, weight, clen, seed, *, shape, transpose, outdim_parallel
 ):
+  import_brainpylib_cpu_ops()
   n_row, n_col = (shape[1], shape[0]) if transpose else shape
 
   vec_shape = c.get_shape(vector)
@@ -345,6 +341,7 @@ def _matvec_prob_homo_cpu_translation(
 def _matvec_prob_homo_gpu_translation(
     c, vector, weight, clen, seed, *, shape, transpose, outdim_parallel
 ):
+  gpu_ops = import_brainpylib_gpu_ops()
   if gpu_ops is None:
     raise GPUOperatorNotFound(mv_prob_homo_p.name)
 
@@ -361,9 +358,9 @@ def _matvec_prob_homo_gpu_translation(
                                                 shape[0] if transpose else shape[1])
 
   if outdim_parallel:
-    fn = b'gpu_matvec_prob_homo_v2' + type_name
+    fn = b'gpu_jit_csrmv_prob_homo_v2' + type_name
   else:
-    fn = b'gpu_matvec_atomic_prob_homo_v2' + type_name
+    fn = b'gpu_jit_csrmv_atomic_prob_homo_v2' + type_name
   return xla_client.ops.CustomCallWithLayout(
     c,
     fn,
@@ -492,6 +489,7 @@ def _matvec_prob_uniform_abstract(
 def _matvec_prob_uniform_cpu_translation(
     c, vector, w_low, w_high, clen, seed, *, shape, transpose, outdim_parallel
 ):
+  import_brainpylib_cpu_ops()
   n_row, n_col = (shape[1], shape[0]) if transpose else shape
 
   vec_shape = c.get_shape(vector)
@@ -537,6 +535,7 @@ def _matvec_prob_uniform_cpu_translation(
 def _matvec_prob_uniform_gpu_translation(
     c, vector, w_low, w_high, clen, seed, *, shape, transpose, outdim_parallel
 ):
+  gpu_ops = import_brainpylib_gpu_ops()
   if gpu_ops is None:
     raise GPUOperatorNotFound(mv_prob_homo_p.name)
 
@@ -553,9 +552,9 @@ def _matvec_prob_uniform_gpu_translation(
                                                 shape[0] if transpose else shape[1])
 
   if outdim_parallel:
-    fn = b'gpu_matvec_prob_uniform_v2' + type_name
+    fn = b'gpu_jit_csrmv_prob_uniform_v2' + type_name
   else:
-    fn = b'gpu_matvec_atomic_prob_uniform_v2' + type_name
+    fn = b'gpu_jit_csrmv_atomic_prob_uniform_v2' + type_name
 
   return xla_client.ops.CustomCallWithLayout(
     c,
@@ -672,6 +671,7 @@ def _matvec_prob_normal_abstract(
 def _matvec_prob_normal_cpu_translation(
     c, vector, w_mu, w_sigma, clen, seed, *, shape, transpose, outdim_parallel
 ):
+  import_brainpylib_cpu_ops()
   n_row, n_col = (shape[1], shape[0]) if transpose else shape
 
   vec_shape = c.get_shape(vector)
@@ -717,6 +717,7 @@ def _matvec_prob_normal_cpu_translation(
 def _matvec_prob_normal_gpu_translation(
     c, vector, w_mu, w_sigma, clen, seed, *, shape, transpose, outdim_parallel
 ):
+  gpu_ops = import_brainpylib_gpu_ops()
   if gpu_ops is None:
     raise GPUOperatorNotFound(mv_prob_homo_p.name)
 
@@ -733,9 +734,9 @@ def _matvec_prob_normal_gpu_translation(
                                                 shape[0] if transpose else shape[1])
 
   if outdim_parallel:
-    fn = b'gpu_matvec_prob_normal_v2' + type_name
+    fn = b'gpu_jit_csrmv_prob_normal_v2' + type_name
   else:
-    fn = b'gpu_matvec_atomic_prob_normal_v2' + type_name
+    fn = b'gpu_jit_csrmv_atomic_prob_normal_v2' + type_name
 
   return xla_client.ops.CustomCallWithLayout(
     c,

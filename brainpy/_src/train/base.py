@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 
-from typing import Dict, Sequence, Any, Union, Optional
+from typing import Dict, Sequence, Any, Optional
 
 import brainpy.math as bm
 from brainpy._src.dynsys import DynamicalSystem
 from brainpy._src.runners import DSRunner
 from brainpy._src.running import constants as c
 from brainpy.errors import NoLongerSupportError
-from brainpy.types import ArrayType, Output
+from brainpy.types import Output
 
 __all__ = [
   'DSTrainer',
@@ -40,7 +40,7 @@ class DSTrainer(DSRunner):
       target: DynamicalSystem,
       **kwargs
   ):
-    super(DSTrainer, self).__init__(target=target, **kwargs)
+    super().__init__(target=target, **kwargs)
 
     if not isinstance(self.target.mode, bm.BatchingMode):
       raise NoLongerSupportError(f'''
@@ -59,12 +59,9 @@ class DSTrainer(DSRunner):
       self.jit[c.PREDICT_PHASE] = self._origin_jit.get(c.PREDICT_PHASE, True)
       self.jit[c.FIT_PHASE] = self._origin_jit.get(c.FIT_PHASE, True)
 
-    # training function
-    self._f_fit_compiled = dict()
-
   def predict(
       self,
-      inputs: Union[ArrayType, Sequence[ArrayType], Dict[str, ArrayType]],
+      inputs: Any,
       reset_state: bool = False,
       shared_args: Optional[Dict] = None,
       eval_time: bool = False
@@ -77,10 +74,10 @@ class DSTrainer(DSRunner):
       The input values.
     reset_state: bool
       Reset the target state before running.
-    shared_args: dict
-      The shared arguments across nodes.
     eval_time: bool
       Whether we evaluate the running time or not?
+    shared_args: dict
+      The shared arguments across nodes.
 
     Returns
     -------
@@ -90,7 +87,6 @@ class DSTrainer(DSRunner):
     if shared_args is None:
       shared_args = dict()
     shared_args['fit'] = shared_args.get('fit', False)
-
     return super().predict(inputs=inputs,
                            reset_state=reset_state,
                            shared_args=shared_args,

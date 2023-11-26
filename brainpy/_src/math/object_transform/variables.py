@@ -1,14 +1,14 @@
-from typing import Optional, Any, List, Callable, Sequence
-
 from contextlib import contextmanager
+from typing import Optional, Any, List, Callable, Sequence, Union, Dict, Tuple
+
 import jax
 import numpy as np
 from jax import numpy as jnp
 from jax.dtypes import canonicalize_dtype
 from jax.tree_util import register_pytree_node_class
 
-from brainpy._src.math.sharding import BATCH_AXIS
 from brainpy._src.math.ndarray import Array
+from brainpy._src.math.sharding import BATCH_AXIS
 from brainpy.errors import MathError
 
 __all__ = [
@@ -51,7 +51,87 @@ class VariableStack(dict):
       if id_ in self._values:
         var._value = self._values[id_]
 
-  def instance_of(self, cls: type) -> 'VariableStack':
+  def assign(self, data: Union[Dict, Sequence], check: bool = True):
+    """Assign the value for each :math:`~.Variable` according to the given ``data``.
+
+    Args:
+      data: dict, list, tuple. The data of all variables
+      check: bool. Check whether the shape and type of the given data are consistent with original data.
+    """
+    if isinstance(data, dict):
+      assert len(data) == len(self), 'Data length mismatch. '
+      if check:
+        for id_, elem in self.items():
+          elem.value = data[id_]
+      else:
+        for id_, elem in self.items():
+          elem._value = data[id_]
+    elif isinstance(data, (tuple, list)):
+      assert len(data) == len(self), 'Data length mismatch. '
+      if check:
+        for i, elem in enumerate(self.values()):
+          elem.value = data[i]
+      else:
+        for i, elem in enumerate(self.values()):
+          elem._value = data[i]
+    else:
+      raise TypeError
+
+  def call_on_subset(self, cond: Callable, call: Callable) -> dict:
+    """Call a function on the subset of this :py:class:`~VariableStack`.
+
+    >>> import brainpy.math as bm
+    >>> stack = VariableStack(a=bm.Variable(1), b=bm.random.RandomState(1))
+    >>> stack.call_on_subset(lambda a: isinstance(a, bm.random.RandomState),
+    >>>                      lambda a: a.split_key())
+    {'b': Array([3819641963, 2025898573], dtype=uint32)}
+
+    Args:
+      cond: The function to determine whether the element belongs to the wanted subset.
+      call: The function to call if the element belongs to the wanted subset.
+
+    Returns:
+      A dict containing the results of ``call`` function for each element in the ``cond`` constrained subset.
+    """
+    res = dict()
+    for id_, elem in self.items():
+      if cond(elem):
+        res[id_] = call(elem)
+    return res
+
+  def separate_by_instance(self, cls: type) -> Tuple['VariableStack', 'VariableStack']:
+    """Separate all variables into two groups: (variables that are instances of the given ``cls``,
+    variables that are not instances of the given ``cls``).
+
+    >>> import brainpy.math as bm
+    >>> stack = VariableStack(a=bm.Variable(1), b=bm.random.RandomState(1))
+    >>> stack.separate_by_instance(bm.random.RandomState)
+    ({'b': RandomState(key=([0, 1], dtype=uint32))},
+     {'a': Variable(value=Array([0.]), dtype=float32)})
+    >>> stack.separate_by_instance(bm.Variable)
+    ({'a': Variable(value=Array([0.]), dtype=float32),
+      'b': RandomState(key=([0, 1], dtype=uint32))},
+     {})
+
+    Args:
+      cls: The class type.
+
+    Returns:
+      A tuple with two elements:
+
+      - VariableStack of variables that are instances of the given ``cls``
+      - VariableStack of variables that are not instances of the given ``cls``
+    """
+    is_instances = type(self)()
+    not_instances = type(self)()
+    for id_, elem in self.items():
+      if isinstance(elem, cls):
+        is_instances[id_] = elem
+      else:
+        not_instances[id_] = elem
+    return is_instances, not_instances
+
+  def subset_by_instance(self, cls: type) -> 'VariableStack':
     """Collect all variables which are instances of the given class type."""
     new_dict = type(self)()
     for id_, elem in self.items():
@@ -59,7 +139,7 @@ class VariableStack(dict):
         new_dict[id_] = elem
     return new_dict
 
-  def not_instance_of(self, cls: type) -> 'VariableStack':
+  def subset_by_not_instance(self, cls: type) -> 'VariableStack':
     """Collect all variables which are not instance of the given class type."""
     new_dict = type(self)()
     for id_, elem in self.items():
@@ -67,11 +147,29 @@ class VariableStack(dict):
         new_dict[id_] = elem
     return new_dict
 
+  instance_of = subset_by_instance
+  not_instance_of = subset_by_not_instance
+
+  def dict_data_of_subset(self, subset_cond: Callable) -> dict:
+    """Get data of the given subset constrained by function ``subset_cond``.
+
+    Args:
+      subset_cond: A function to determine whether the element is in the subset wanted.
+
+    Returns:
+      A dict of data for elements of the wanted subset.
+    """
+    res = dict()
+    for id_, elem in self.items():
+      if subset_cond(elem):
+        res[id_] = elem.value
+    return res
+
   def dict_data(self) -> dict:
     """Get all data in the collected variables with a python dict structure."""
     new_dict = dict()
     for id_, elem in tuple(self.items()):
-      new_dict[id_] = elem.value if isinstance(elem, Array) else elem
+      new_dict[id_] = elem.value
     return new_dict
 
   def list_data(self) -> list:
@@ -81,14 +179,16 @@ class VariableStack(dict):
       new_list.append(elem.value if isinstance(elem, Array) else elem)
     return new_list
 
-  def remove_var_by_id(self, *ids, error_when_absent=False):
-    """Remove variables in the stack by the given ids."""
+  def remove_by_id(self, *ids, error_when_absent=False):
+    """Remove or pop variables in the stack by the given ids."""
     if error_when_absent:
       for id_ in ids:
         self.pop(id_)
     else:
       for id_ in ids:
         self.pop(id_, None)
+
+  remove_var_by_id = remove_by_id
 
   def __enter__(self) -> 'VariableStack':
     self.collect_values()  # recollect the original value of each variable
@@ -163,17 +263,14 @@ class Variable(Array):
   Note that when initializing a `Variable` by the data shape,
   all values in this `Variable` will be initialized as zeros.
 
-  Parameters
-  ----------
-  value_or_size: Shape, Array, int
-    The value or the size of the value.
-  dtype:
-    The type of the data.
-  batch_axis: optional, int
-    The batch axis.
+  Args:
+    value_or_size: Shape, Array, int. The value or the size of the value.
+    dtype: Any. The type of the data.
+    batch_axis: optional, int. The batch axis.
+    axis_names: sequence of str. The name for each axis.
   """
 
-  __slots__ = ('_value', '_batch_axis', '_ready_to_trace', 'axis_names')
+  __slots__ = ('_value', '_batch_axis', 'ready_to_trace', 'axis_names')
 
   def __init__(
       self,
@@ -182,7 +279,7 @@ class Variable(Array):
       batch_axis: int = None,
       *,
       axis_names: Optional[Sequence[str]] = None,
-      _ready_to_trace: bool = True
+      ready_to_trace: bool = None
   ):
     if isinstance(value_or_size, int):
       value = jnp.zeros(value_or_size, dtype=dtype)
@@ -191,7 +288,7 @@ class Variable(Array):
     else:
       value = value_or_size
 
-    super(Variable, self).__init__(value, dtype=dtype)
+    super().__init__(value, dtype=dtype)
 
     # check batch axis
     if isinstance(value, Variable):
@@ -209,7 +306,13 @@ class Variable(Array):
                         f'but the batch axis is set to be {batch_axis}.')
 
     # ready to trace the variable
-    self._ready_to_trace = _ready_to_trace and len(var_stack_list) == 0
+    if ready_to_trace is None:
+      if len(var_stack_list) == 0:
+        self.ready_to_trace = True
+      else:
+        self.ready_to_trace = False
+    else:
+      self.ready_to_trace = ready_to_trace
     if axis_names is not None:
       if len(axis_names) + 1 == self.ndim:
         axis_names = list(axis_names)
@@ -256,7 +359,7 @@ class Variable(Array):
     ext_shape = jnp.shape(v)
     int_shape = jnp.shape(_value)
     if self._batch_axis is not None:
-      ext_shape = v.shape[:self._batch_axis] + v.shape[self._batch_axis + 1:]
+      ext_shape = ext_shape[:self._batch_axis] + ext_shape[self._batch_axis + 1:]
       int_shape = int_shape[:self._batch_axis] + int_shape[self._batch_axis + 1:]
     if ext_shape != int_shape:
       error = f"The shape of the original data is {int_shape}, while we got {ext_shape}"
@@ -268,21 +371,46 @@ class Variable(Array):
       raise MathError(f"The dtype of the original data is {int_dtype}, "
                       f"while we got {ext_dtype}.")
     self._append_to_stack()
-    self._value = v.value if isinstance(v, Array) else v
+    if isinstance(v, Array):
+      v = v.value
+    elif isinstance(v, np.ndarray):
+      v = jnp.asarray(v)
+    else:
+      v = v
+    self._value = v
 
   def _append_to_stack(self):
-    if self._ready_to_trace:
+    if self.ready_to_trace:
       for stack in var_stack_list:
         stack.add(self)
 
+  def tree_flatten(self):
+    """Flattens this variable.
+
+    Returns:
+      A pair where the first element is a list of leaf values
+      and the second element is a treedef representing the
+      structure of the flattened tree.
+    """
+    return (self._value,), None
+
   @classmethod
   def tree_unflatten(cls, aux_data, flat_contents):
-    return cls(*flat_contents, _ready_to_trace=False)
+    """Reconstructs a variable from the aux_data and the leaves.
+
+    Args:
+      aux_data:
+      flat_contents:
+
+    Returns:
+      The variable.
+    """
+    return cls(*flat_contents, ready_to_trace=False)
 
   def clone(self) -> 'Variable':
     """Clone the variable. """
-    r = type(self)(jnp.copy(self.value), batch_axis=self.batch_axis)
-    r._ready_to_trace = self._ready_to_trace
+    r = type(self)(jnp.array(self.value, copy=True), batch_axis=self.batch_axis)
+    r.ready_to_trace = self.ready_to_trace
     return r
 
 
@@ -310,13 +438,13 @@ class TrainVar(Variable):
       batch_axis: int = None,
       *,
       axis_names: Optional[Sequence[str]] = None,
-      _ready_to_trace: bool = True
+      ready_to_trace: bool = True
   ):
-    super(TrainVar, self).__init__(
+    super().__init__(
       value_or_size,
       dtype=dtype,
       batch_axis=batch_axis,
-      _ready_to_trace=_ready_to_trace,
+      ready_to_trace=ready_to_trace,
       axis_names=axis_names,
     )
 
@@ -333,13 +461,13 @@ class Parameter(Variable):
       batch_axis: int = None,
       *,
       axis_names: Optional[Sequence[str]] = None,
-      _ready_to_trace: bool = True
+      ready_to_trace: bool = True
   ):
-    super(Parameter, self).__init__(
+    super().__init__(
       value_or_size,
       dtype=dtype,
       batch_axis=batch_axis,
-      _ready_to_trace=_ready_to_trace,
+      ready_to_trace=ready_to_trace,
       axis_names=axis_names,
     )
 
@@ -383,7 +511,7 @@ class VariableView(Variable):
     self.index = jax.tree_util.tree_map(_as_jax_array_, index, is_leaf=lambda a: isinstance(a, Array))
     if not isinstance(value, Variable):
       raise ValueError('Must be instance of Variable.')
-    super(VariableView, self).__init__(value.value, batch_axis=value.batch_axis, _ready_to_trace=False)
+    super().__init__(value.value, batch_axis=value.batch_axis, ready_to_trace=False)
     self._value = value
 
   def __repr__(self) -> str:
@@ -431,6 +559,8 @@ class VarList(list):
 
   Actually, :py:class:`~.VarList` is a python list.
 
+  :py:class:`~.VarList` is specifically designed to store Variable instances.
+
   """
 
   def __init__(self, seq=()):
@@ -449,6 +579,20 @@ class VarList(list):
     return self
 
   def __setitem__(self, key, value) -> 'VarList':
+    """Override the item setting.
+
+    This function ensures that the Variable appended in the :py:class:`~.VarList` will not be overridden,
+    and only the value can be changed for each element.
+
+    >>> import brainpy.math as bm
+    >>> l = bm.var_list([bm.Variable(1), bm.Variable(2)])
+    >>> print(id(l[0]), id(l[1]))
+    2077748389472 2077748389552
+    >>> l[1] = bm.random.random(2)
+    >>> l[0] = bm.random.random(1)
+    >>> print(id(l[0]), id(l[1]))  # still the original Variable instances
+    2077748389472 2077748389552
+    """
     if isinstance(key, int):
       self[key].value = value
     else:
@@ -472,6 +616,8 @@ class VarDict(dict):
   :py:func:`.vars()` operation in a :py:class:`~.BrainPyObject`.
 
   Actually, :py:class:`~.VarDict` is a python dict.
+
+  :py:class:`~.VarDict` is specifically designed to store Variable instances.
 
   """
 
@@ -497,6 +643,19 @@ class VarDict(dict):
     return self
 
   def __setitem__(self, key, value) -> 'VarDict':
+    """Override the item setting.
+
+    This function ensures that the Variable appended in the :py:class:`~.VarList` will not be overridden.
+
+    >>> import brainpy.math as bm
+    >>> d = bm.var_dict({'a': bm.Variable(1), 'b': bm.Variable(2)})
+    >>> print(id(d['a']), id(d['b']))
+    2077667833504 2077748488176
+    >>> d['b'] = bm.random.random(2)
+    >>> d['a'] = bm.random.random(1)
+    >>> print(id(d['a']), id(d['b']))  # still the original Variable instances
+    2077667833504 2077748488176
+    """
     if key in self:
       self[key].value = value
     else:

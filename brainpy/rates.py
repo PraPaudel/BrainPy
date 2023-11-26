@@ -1,14 +1,10 @@
 # -*- coding: utf-8 -*-
 
 
-from brainpy._src.rates.populations import (
-  RateModel as RateModel,
-  FHN as FHN,
-  FeedbackFHN as FeedbackFHN,
-  QIF as QIF,
-  StuartLandauOscillator as StuartLandauOscillator,
-  WilsonCowanModel as WilsonCowanModel,
-  ThresholdLinearModel as ThresholdLinearModel,
-)
+"""
+This module has been deprecated since brainpy>=2.4.0. Use ``brainpy.dyn`` module instead.
+"""
+
+from .dyn.rates import *
 
 

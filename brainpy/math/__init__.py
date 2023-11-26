@@ -19,12 +19,12 @@ from .op_register import *
 from . import surrogate, event, sparse, jitconn
 
 # Variable and Objects for object-oriented JAX transformations
-from .object_base import *
-from .object_transform import *
+from .oo_transform import *
 
 # environment settings
 from .modes import *
 from .environment import *
+from .scales import *
 from .others import *
 
 # high-level numpy operations
@@ -40,6 +40,9 @@ from jax import config
 
 mode = NonBatchingMode()
 '''Default computation mode.'''
+
+membrane_scaling = IdScaling()
+'''Default membrane_scaling.'''
 
 dt = 0.1
 '''Default time step.'''

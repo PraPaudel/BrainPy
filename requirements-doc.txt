@@ -2,16 +2,21 @@ numpy
 tqdm
 msgpack
 numba
-jax>=0.4.1
-matplotlib>=3.4
-jaxlib>=0.4.1
-scipy>=1.1.0
+jax
+jaxlib
+matplotlib
+scipy
+numba
 
 # document requirements
 pandoc
 Jinja2
-sphinx>=4
+sphinx>=5
 myst-nb
 sphinx_thebe
-sphinx-autodoc-typehints~=1.18.0
-sphinx-book-theme>=0.3.3
+sphinx-autodoc-typehints
+sphinx-book-theme>=1.0.1
+sphinx-copybutton>=0.5.0
+sphinx-remove-toctrees
+jupyter-sphinx>=0.3.2
+sphinx-design

@@ -117,6 +117,27 @@ class TestLoop(parameterized.TestCase):
     ys = bm.for_loop(lambda a: a, xs, progress_bar=True)
     self.assertTrue(bm.allclose(xs, ys))
 
+  def test_for_loop2(self):
+    class MyClass(bp.DynamicalSystem):
+      def __init__(self):
+        super().__init__()
+        self.a = bm.Variable(bm.zeros(1))
+
+      def update(self):
+        self.a += 1
+
+    cls = MyClass()
+    indices = bm.arange(10)
+    bm.for_loop(cls.step_run, indices)
+    self.assertTrue(bm.allclose(cls.a, 10.))
+
+
+class TestCond(unittest.TestCase):
+  def test1(self):
+    bm.random.seed(1)
+    bm.cond(True, lambda: bm.random.random(10), lambda: bm.random.random(10), ())
+    bm.cond(False, lambda: bm.random.random(10), lambda: bm.random.random(10), ())
+
 
 class TestIfElse(unittest.TestCase):
   def test1(self):
@@ -188,8 +209,10 @@ class TestIfElse(unittest.TestCase):
     self.assertTrue(f2().size == 200)
 
 
-class TestWhile(bp.testing.UnitTestCase):
+class TestWhile(unittest.TestCase):
   def test1(self):
+    bm.random.seed()
+
     a = bm.Variable(bm.zeros(1))
     b = bm.Variable(bm.ones(1))
 
@@ -205,27 +228,9 @@ class TestWhile(bp.testing.UnitTestCase):
     print()
     print(res)
 
-  def test3(self):
-    a = bm.Variable(bm.zeros(1))
-    b = bm.Variable(bm.ones(1))
-
-    def cond(x, y):
-      return bm.all(a.value < 6.)
-
-    def body(x, y):
-      a.value += x
-      b.value *= y
-
-    res = bm.while_loop(body, cond, operands=(1., 1.))
-    self.assertTrue(bm.allclose(a, 6.))
-    self.assertTrue(bm.allclose(b, 1.))
-    print()
-    print(res)
-    print(a)
-    print(b)
-
-
   def test2(self):
+    bm.random.seed()
+
     a = bm.Variable(bm.zeros(1))
     b = bm.Variable(bm.ones(1))
 
@@ -249,6 +254,78 @@ class TestWhile(bp.testing.UnitTestCase):
       print(res2)
       self.assertTrue(bm.array_equal(res2[0], res[0]))
       self.assertTrue(bm.array_equal(res2[1], res[1]))
+
+  def test3(self):
+    bm.random.seed()
+
+    a = bm.Variable(bm.zeros(1))
+    b = bm.Variable(bm.ones(1))
+
+    def cond(x, y):
+      return bm.all(a.value < 6.)
+
+    def body(x, y):
+      a.value += x
+      b.value *= y
+
+    res = bm.while_loop(body, cond, operands=(1., 1.))
+    self.assertTrue(bm.allclose(a, 6.))
+    self.assertTrue(bm.allclose(b, 1.))
+    print()
+    print(res)
+    print(a)
+    print(b)
+
+  def test4(self):
+    bm.random.seed()
+
+    a = bm.Variable(bm.zeros(1))
+    b = bm.Variable(bm.ones(1))
+
+    def cond(x, y):
+      a.value += 1
+      return bm.all(a.value < 6.)
+
+    def body(x, y):
+      a.value += x
+      b.value *= y
+
+    res = bm.while_loop(body, cond, operands=(1., 1.))
+    self.assertTrue(bm.allclose(a, 5.))
+    self.assertTrue(bm.allclose(b, 1.))
+    print(res)
+    print(a)
+    print(b)
+    print()
+
+  def test5(self):
+    bm.random.seed()
+
+    a = bm.Variable(bm.zeros(1))
+    b = bm.Variable(bm.ones(1))
+    c = bm.Variable(bm.ones(1))
+
+    def cond(x, y):
+      a.value += 1
+      return bm.all(a.value < 6.)
+
+    def body(x, y):
+      a.value += x
+      b.value *= y
+      return x + 1, y + 1
+
+    @bm.jit
+    def run(a, b):
+      x, y = bm.while_loop(body, cond, operands=(a, b))
+      return c + x
+
+    run(0., 1.)
+
+    # self.assertTrue(bm.allclose(a, 5.))
+    # self.assertTrue(bm.allclose(b, 1.))
+    # print(a)
+    # print(b)
+    # print()
 
 
 class TestDebugAndCompile(parameterized.TestCase):

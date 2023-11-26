@@ -13,7 +13,7 @@ class TestDSRunner(unittest.TestCase):
         super(ExampleDS, self).__init__()
         self.i = bm.Variable(bm.zeros(1))
 
-      def update(self, tdi):
+      def update(self):
         self.i += 1
 
     ds = ExampleDS()
@@ -26,8 +26,8 @@ class TestDSRunner(unittest.TestCase):
         super(ExampleDS, self).__init__()
         self.i = bm.Variable(bm.zeros(1))
 
-      def update(self, tdi):
-        self.i += 1 * tdi.dt
+      def update(self):
+        self.i += 1 * bp.share['dt']
 
     runner = bp.DSRunner(ExampleDS(), dt=1., monitors=['i'], progress_bar=False)
     runner.run(100.)
@@ -73,8 +73,7 @@ class TestDSRunner(unittest.TestCase):
 
     # without JIT
     runner = bp.DSRunner(net, monitors={'E.spike': net.E.spike},
-                         inputs=[(net.E.input, 20.), (net.I.input, 20.)],
-                         jit=False).run(0.2)
+                         inputs=[(net.E.input, 20.), (net.I.input, 20.)], jit=False).run(0.2)
 
 
 

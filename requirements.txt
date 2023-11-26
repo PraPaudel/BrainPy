@@ -1,4 +1,5 @@
 numpy
-jax>=0.4.1
+jax
 tqdm
 msgpack
+numba

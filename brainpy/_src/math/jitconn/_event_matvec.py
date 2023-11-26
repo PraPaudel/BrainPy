@@ -10,7 +10,7 @@ from jax.core import ShapedArray, Primitive
 from jax.interpreters import xla, ad
 from jax.lib import xla_client
 
-from brainpy._src.math.ndarray import _get_dtype
+from brainpy._src.dependency_check import import_brainpylib_gpu_ops, import_brainpylib_cpu_ops
 from brainpy._src.math.interoperability import as_jax
 from brainpy._src.math.jitconn._matvec import (mv_prob_homo_p,
                                                mv_prob_uniform_p,
@@ -18,13 +18,9 @@ from brainpy._src.math.jitconn._matvec import (mv_prob_homo_p,
                                                mv_prob_homo,
                                                mv_prob_uniform,
                                                mv_prob_normal)
-from brainpy._src.math.op_registers import register_general_batching
-from brainpy.errors import GPUOperatorNotFound, MathError
-
-try:
-  from brainpylib import gpu_ops
-except ImportError:
-  gpu_ops = None
+from brainpy._src.math.ndarray import _get_dtype
+from brainpy._src.math.op_register import register_general_batching
+from brainpy.errors import GPUOperatorNotFound
 
 __all__ = [
   'event_mv_prob_homo',
@@ -50,7 +46,7 @@ def event_mv_prob_homo(
   with jax.ensure_compile_time_eval():
     if seed is None:
       seed = int(np.random.randint(0, int(1e8)))
-  seed = jnp.atleast_1d(as_jax(seed))
+  seed = jnp.atleast_1d(as_jax(seed, dtype=jnp.int32))
   r = event_mv_prob_homo_p.bind(events,
                                 weight,
                                 clen,
@@ -83,7 +79,7 @@ def event_mv_prob_uniform(
   with jax.ensure_compile_time_eval():
     if seed is None:
       seed = int(np.random.randint(0, int(1e8)))
-  seed = jnp.atleast_1d(as_jax(seed))
+  seed = jnp.atleast_1d(as_jax(seed, dtype=jnp.int32))
   return event_mv_prob_uniform_p.bind(events,
                                       w_low,
                                       w_high,
@@ -116,7 +112,7 @@ def event_mv_prob_normal(
   with jax.ensure_compile_time_eval():
     if seed is None:
       seed = int(np.random.randint(0, int(1e8)))
-  seed = jnp.atleast_1d(as_jax(seed))
+  seed = jnp.atleast_1d(as_jax(seed, dtype=jnp.int32))
   return event_mv_prob_normal_p.bind(events,
                                      w_mu,
                                      w_sigma,
@@ -167,16 +163,9 @@ def _event_matvec_prob_homo_abstract(
 def _event_matvec_prob_homo_cpu_translation(
     c, events, weight, clen, seed, *, shape, transpose, outdim_parallel
 ):
+  import_brainpylib_cpu_ops()
   n_row, n_col = (shape[1], shape[0]) if transpose else shape
-  event_shape = c.get_shape(events)
-  if event_shape.element_type() == jnp.bool_:
-    event_type = b'_bool'
-    out_dtype = dtypes.canonicalize_dtype(float)
-    type_name = b'_float' if out_dtype == jnp.float32 else b'_double'
-  else:
-    out_dtype = event_shape.element_type()
-    event_type = b'_float' if out_dtype == jnp.float32 else b'_double'
-    type_name = event_type
+  out_dtype, event_type, type_name = _get_types(c.get_shape(events))
 
   if outdim_parallel:
     fn = b'cpu_event_matvec_prob_homo' + type_name + event_type
@@ -209,26 +198,19 @@ def _event_matvec_prob_homo_cpu_translation(
 def _event_matvec_prob_homo_gpu_translation(
     c, events, weight, clen, seed, *, shape, transpose, outdim_parallel
 ):
+  gpu_ops = import_brainpylib_gpu_ops()
   if gpu_ops is None:
     raise GPUOperatorNotFound(event_mv_prob_homo_p.name)
 
-  event_shape = c.get_shape(events)
-  if event_shape.element_type() == jnp.bool_:
-    event_type = b'_bool'
-    out_dtype = dtypes.canonicalize_dtype(float)
-    type_name = b'_float' if out_dtype == jnp.float32 else b'_double'
-  else:
-    out_dtype = event_shape.element_type()
-    event_type = b'_float' if out_dtype == jnp.float32 else b'_double'
-    type_name = event_type
+  out_dtype, event_type, type_name = _get_types(c.get_shape(events))
 
   opaque = gpu_ops.build_double_size_descriptor(shape[1] if transpose else shape[0],
                                                 shape[0] if transpose else shape[1], )
 
   if outdim_parallel:
-    fn = b'gpu_event_matvec_prob_homo_v2' + type_name + event_type
+    fn = b'gpu_jit_event_csrmv_prob_homo_v2' + type_name + event_type
   else:
-    fn = b'gpu_event_matvec_atomic_prob_homo_v2' + type_name + event_type
+    fn = b'gpu_jit_event_csrmv_atomic_prob_homo_v2' + type_name + event_type
 
   return xla_client.ops.CustomCallWithLayout(
     c,
@@ -365,17 +347,10 @@ def _event_matvec_prob_uniform_abstract(
 def _event_matvec_prob_uniform_cpu_translation(
     c, events, w_low, w_high, clen, seed, *, shape, transpose, outdim_parallel
 ):
+  import_brainpylib_cpu_ops()
   n_row, n_col = (shape[1], shape[0]) if transpose else shape
 
-  event_shape = c.get_shape(events)
-  if event_shape.element_type() == jnp.bool_:
-    event_type = b'_bool'
-    out_dtype = dtypes.canonicalize_dtype(float)
-    type_name = b'_float' if (out_dtype == jnp.float32) else b'_double'
-  else:
-    out_dtype = event_shape.element_type()
-    event_type = b'_float' if (out_dtype == jnp.float32) else b'_double'
-    type_name = event_type
+  out_dtype, event_type, type_name = _get_types(c.get_shape(events))
 
   if outdim_parallel:
     fn = b'cpu_event_matvec_prob_uniform' + type_name + event_type
@@ -409,25 +384,18 @@ def _event_matvec_prob_uniform_cpu_translation(
 def _event_matvec_prob_uniform_gpu_translation(
     c, events, w_low, w_high, clen, seed, *, shape, transpose, outdim_parallel
 ):
+  gpu_ops = import_brainpylib_gpu_ops()
   if gpu_ops is None:
     raise GPUOperatorNotFound(event_mv_prob_uniform_p.name)
 
-  event_shape = c.get_shape(events)
-  if event_shape.element_type() == jnp.bool_:
-    event_type = b'_bool'
-    out_dtype = dtypes.canonicalize_dtype(float)
-    type_name = b'_float' if out_dtype == jnp.float32 else b'_double'
-  else:
-    out_dtype = event_shape.element_type()
-    event_type = b'_float' if out_dtype == jnp.float32 else b'_double'
-    type_name = event_type
+  out_dtype, event_type, type_name = _get_types(c.get_shape(events))
 
   opaque = gpu_ops.build_double_size_descriptor(shape[1] if transpose else shape[0],
                                                 shape[0] if transpose else shape[1])
   if outdim_parallel:
-    fn = b'gpu_event_matvec_prob_uniform_v2' + type_name + event_type
+    fn = b'gpu_jit_event_csrmv_prob_uniform_v2' + type_name + event_type
   else:
-    fn = b'gpu_event_matvec_atomic_prob_uniform_v2' + type_name + event_type
+    fn = b'gpu_jit_event_csrmv_atomic_prob_uniform_v2' + type_name + event_type
   return xla_client.ops.CustomCallWithLayout(
     c,
     fn,
@@ -513,7 +481,6 @@ def _event_matvec_prob_normal_abstract(
   _w_sigma_dtype = _get_dtype(w_sigma)
   assert _w_mu_dtype == _w_sigma_dtype, '"w_mu" and "w_sigma" must be same typed.'
   assert _w_mu_dtype in [jnp.float32, jnp.float64], '"w_mu" must be float valued.'
-  assert _w_sigma_dtype in [jnp.float32, jnp.float64], '"w_sigma" must be float valued.'
   assert _get_dtype(clen) in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64]
   assert _get_dtype(seed) in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64]
 
@@ -547,20 +514,37 @@ def _event_matvec_prob_normal_abstract(
   return [out]
 
 
+def _get_types(event_shape):
+  event_type = event_shape.element_type()
+  if event_type == jnp.bool_:
+    event_type = b'_bool'
+    out_dtype = dtypes.canonicalize_dtype(float)
+  elif event_type == jnp.float32:
+    event_type = b'_float'
+    out_dtype = event_shape.element_type()
+  elif event_type == jnp.float64:
+    event_type = b'_double'
+    out_dtype = event_shape.element_type()
+  else:
+    raise TypeError
+
+  if out_dtype == jnp.float32:
+    type_name = b'_float'
+  elif out_dtype == jnp.float64:
+    type_name = b'_double'
+  else:
+    raise TypeError
+
+  return out_dtype, event_type, type_name
+
+
 def _event_matvec_prob_normal_cpu_translation(
     c, events, w_mu, w_sigma, clen, seed, *, shape, transpose, outdim_parallel
 ):
+  import_brainpylib_cpu_ops()
   n_row, n_col = (shape[1], shape[0]) if transpose else shape
 
-  event_shape = c.get_shape(events)
-  if event_shape.element_type() == jnp.bool_:
-    event_type = b'_bool'
-    out_dtype = dtypes.canonicalize_dtype(float)
-    type_name = b'_float' if out_dtype == jnp.float32 else b'_double'
-  else:
-    out_dtype = event_shape.element_type()
-    event_type = b'_float' if out_dtype == jnp.float32 else b'_double'
-    type_name = event_type
+  out_dtype, event_type, type_name = _get_types(c.get_shape(events))
 
   if outdim_parallel:
     fn = b'cpu_event_matvec_prob_normal' + type_name + event_type
@@ -594,24 +578,18 @@ def _event_matvec_prob_normal_cpu_translation(
 def _event_matvec_prob_normal_gpu_translation(
     c, events, w_mu, w_sigma, clen, seed, *, shape, transpose, outdim_parallel
 ):
+  gpu_ops = import_brainpylib_gpu_ops()
   if gpu_ops is None:
     raise GPUOperatorNotFound(event_mv_prob_normal_p.name)
 
-  event_shape = c.get_shape(events)
-  if event_shape.element_type() == jnp.bool_:
-    event_type = b'_bool'
-    out_dtype = dtypes.canonicalize_dtype(float)
-    type_name = b'_float' if out_dtype == jnp.float32 else b'_double'
-  else:
-    out_dtype = event_shape.element_type()
-    event_type = b'_float' if out_dtype == jnp.float32 else b'_double'
-    type_name = event_type
+  out_dtype, event_type, type_name = _get_types(c.get_shape(events))
+
   opaque = gpu_ops.build_double_size_descriptor(shape[1] if transpose else shape[0],
                                                 shape[0] if transpose else shape[1])
   if outdim_parallel:
-    fn = b'gpu_event_matvec_prob_normal_v2' + type_name + event_type
+    fn = b'gpu_jit_event_csrmv_prob_normal_v2' + type_name + event_type
   else:
-    fn = b'gpu_event_matvec_atomic_prob_normal_v2' + type_name + event_type
+    fn = b'gpu_jit_event_csrmv_atomic_prob_normal_v2' + type_name + event_type
   return xla_client.ops.CustomCallWithLayout(
     c,
     fn,

@@ -21,7 +21,10 @@ from brainpy._src.math.object_transform.naming import (get_unique_name,
                                                        check_name_uniqueness)
 from brainpy._src.math.object_transform.variables import (Variable, VariableView, TrainVar,
                                                           VarList, VarDict)
+from brainpy._src.math.modes import Mode
+from brainpy._src.math.sharding import BATCH_AXIS
 
+variable_ = None
 StateLoadResult = namedtuple('StateLoadResult', ['missing_keys', 'unexpected_keys'])
 
 __all__ = [
@@ -102,17 +105,93 @@ class BrainPyObject(object):
   def setattr(self, key: str, value: Any) -> None:
     super().__setattr__(key, value)
 
+  def tracing_variable(
+      self,
+      name: str,
+      init: Union[Callable, Array, jax.Array],
+      shape: Union[int, Sequence[int]],
+      batch_or_mode: Union[int, bool, Mode] = None,
+      batch_axis: int = 0,
+      axis_names: Optional[Sequence[str]] = None,
+      batch_axis_name: Optional[str] = BATCH_AXIS,
+  ) -> Variable:
+    """Initialize the variable which can be traced during computations and transformations.
+
+    Although this function is designed to initialize tracing variables during computation or compilation,
+    it can also be used for the initialization of variables before computation and compilation.
+
+    - If the variable has not been instantiated, a :py:class:`~.Variable` will be instantiated.
+    - If the variable has been created, the further call of this function will return the created variable.
+
+    Here is the usage example::
+
+       class Example(bm.BrainPyObject):
+         def fun(self):
+           # The first time of calling `.fun()`, this line will create a Variable instance.
+           # If users repeatedly call `.fun()` function, this line will not initialize variables again.
+           # Instead, it will return the variable has been created.
+           self.tracing_variable('a', bm.zeros, (10,))
+
+           # The created variable can be accessed with self.xxx
+           self.a.value = bm.ones(10)
+
+           # Calling this function again will not reinitialize the
+           # variable again, Instead, it will return the variable
+           # that has been created.
+           a = self.tracing_variable('a', bm.zeros, (10,))
+
+    .. versionadded:: 2.4.5
+
+    Args:
+      name: str. The variable name.
+      init: callable, Array. The data to be initialized as a ``Variable``.
+      batch_or_mode: int, bool, Mode. This is used to specify the batch size of this variable.
+        If it is a boolean or an instance of ``Mode``, the batch size will be 1.
+        If it is None, the variable has no batch axis.
+      shape: int, sequence of int. The shape of the variable.
+      batch_axis: int. The batch axis, if batch size is given.
+      axis_names: sequence of str. The name for each axis. These names should match the given ``axes``.
+      batch_axis_name: str. The name for the batch axis. The name will be used
+        if ``batch_or_mode`` is given. Default is ``brainpy.math.sharding.BATCH_AXIS``.
+
+    Returns:
+      The instance of :py:class:`~.Variable`.
+    """
+    # the variable has been created
+    if hasattr(self, name):
+      var = getattr(self, name)
+      if isinstance(var, Variable):
+        return var
+        # if var.shape != value.shape:
+        #   raise ValueError(
+        #     f'"{name}" has been used in this class with the shape of {var.shape} (!= {value.shape}). '
+        #     f'Please assign another name for the initialization of variables '
+        #     f'tracing during computation and compilation.'
+        #   )
+        # if var.dtype != value.dtype:
+        #   raise ValueError(
+        #     f'"{name}" has been used in this class with the dtype of {var.dtype} (!= {value.dtype}). '
+        #     f'Please assign another name for the initialization of variables '
+        #     f'tracing during computation and compilation.'
+        #   )
+
+    global variable_
+    if variable_ is None:
+      from brainpy.initialize import variable_
+    with jax.ensure_compile_time_eval():
+      value = variable_(init, shape, batch_or_mode, batch_axis, axis_names, batch_axis_name)
+      value.ready_to_trace = True
+    self.setattr(name, value)
+    return value
+
   def __setattr__(self, key: str, value: Any) -> None:
     """Overwrite `__setattr__` method for changing :py:class:`~.Variable` values.
 
     .. versionadded:: 2.3.1
 
-    Parameters
-    ----------
-    key: str
-      The attribute.
-    value: Any
-      The value.
+    Args:
+      key: str. The attribute.
+      value: Any. The value.
     """
     if key in self.__dict__:
       val = self.__dict__[key]
@@ -219,11 +298,13 @@ class BrainPyObject(object):
         raise ValueError(f'Must be instance of {node_cls.__name__}, but we got {type(node)}')
       self.implicit_nodes[key] = node
 
-  def vars(self,
-           method: str = 'absolute',
-           level: int = -1,
-           include_self: bool = True,
-           exclude_types: Tuple[type, ...] = None):
+  def vars(
+      self,
+      method: str = 'absolute',
+      level: int = -1,
+      include_self: bool = True,
+      exclude_types: Tuple[type, ...] = None
+  ):
     """Collect all variables in this node and the children nodes.
 
     Parameters
@@ -252,7 +333,7 @@ class BrainPyObject(object):
           continue
         v = getattr(node, k)
         if isinstance(v, Variable) and not isinstance(v, exclude_types):
-            gather[f'{node_path}.{k}' if node_path else k] = v
+          gather[f'{node_path}.{k}' if node_path else k] = v
         elif isinstance(v, VarList):
           for i, vv in enumerate(v):
             if not isinstance(vv, exclude_types):
@@ -397,10 +478,20 @@ class BrainPyObject(object):
       check_name_uniqueness(name=name, obj=self)
       return name
 
-  def __save_state__(self) -> Dict[str, Variable]:
+  def save_state(self, **kwargs) -> Dict:
+    """Save states as a dictionary. """
+    return self.__save_state__(**kwargs)
+
+  def load_state(self, state_dict: Dict, **kwargs) -> Optional[Tuple[Sequence[str], Sequence[str]]]:
+    """Load states from a dictionary."""
+    return self.__load_state__(state_dict, **kwargs)
+
+  def __save_state__(self, **kwargs) -> Dict:
+    """Save states. """
     return self.vars(include_self=True, level=0).unique().dict()
 
-  def __load_state__(self, state_dict: Dict) -> Optional[Tuple[Sequence[str], Sequence[str]]]:
+  def __load_state__(self, state_dict: Dict, **kwargs) -> Optional[Tuple[Sequence[str], Sequence[str]]]:
+    """Load states from the external objects."""
     variables = self.vars(include_self=True, level=0).unique()
     keys1 = set(state_dict.keys())
     keys2 = set(variables.keys())
@@ -410,7 +501,7 @@ class BrainPyObject(object):
     missing_keys = list(keys2 - keys1)
     return unexpected_keys, missing_keys
 
-  def state_dict(self) -> dict:
+  def state_dict(self, **kwargs) -> dict:
     """Returns a dictionary containing a whole state of the module.
 
     Returns
@@ -419,12 +510,15 @@ class BrainPyObject(object):
       A dictionary containing a whole state of the module.
     """
     nodes = self.nodes()  # retrieve all nodes
-    return {key: node.__save_state__() for key, node in nodes.items()}
+    return {key: node.save_state(**kwargs) for key, node in nodes.items()}
 
-  def load_state_dict(self,
-                      state_dict: Dict[str, Any],
-                      warn: bool = True,
-                      compatible: str = 'v2'):
+  def load_state_dict(
+      self,
+      state_dict: Dict[str, Any],
+      warn: bool = True,
+      compatible: str = 'v2',
+      **kwargs,
+  ):
     """Copy parameters and buffers from :attr:`state_dict` into
     this module and its descendants.
 
@@ -434,6 +528,8 @@ class BrainPyObject(object):
       A dict containing parameters and persistent buffers.
     warn: bool
       Warnings when there are missing keys or unexpected keys in the external ``state_dict``.
+    compatible: bool
+      The version of API for compatibility.
 
     Returns
     -------
@@ -456,7 +552,7 @@ class BrainPyObject(object):
       missing_keys = []
       unexpected_keys = []
       for name, node in nodes.items():
-        r = node.__load_state__(state_dict[name])
+        r = node.load_state(state_dict[name], **kwargs)
         if r is not None:
           missing, unexpected = r
           missing_keys.extend([f'{name}.{key}' for key in missing])
@@ -469,55 +565,6 @@ class BrainPyObject(object):
       if len(missing_keys):
         warnings.warn(f'Missing keys in state_dict: {missing_keys}', UserWarning)
     return StateLoadResult(missing_keys, unexpected_keys)
-
-  def load_states(self, filename, verbose=False):
-    """Load the model states.
-
-    Parameters
-    ----------
-    filename : str
-      The filename which stores the model states.
-    verbose: bool
-      Whether report the load progress.
-    """
-    from brainpy._src.checkpoints import io
-    if not os.path.exists(filename):
-      raise errors.BrainPyError(f'Cannot find the file path: {filename}')
-    elif filename.endswith('.hdf5') or filename.endswith('.h5'):
-      io.load_by_h5(filename, target=self, verbose=verbose)
-    elif filename.endswith('.pkl'):
-      io.load_by_pkl(filename, target=self, verbose=verbose)
-    elif filename.endswith('.npz'):
-      io.load_by_npz(filename, target=self, verbose=verbose)
-    elif filename.endswith('.mat'):
-      io.load_by_mat(filename, target=self, verbose=verbose)
-    else:
-      raise errors.BrainPyError(f'Unknown file format: {filename}. We only supports {io.SUPPORTED_FORMATS}')
-
-  def save_states(self, filename, variables=None, **setting):
-    """Save the model states.
-
-    Parameters
-    ----------
-    filename : str
-      The file name which to store the model states.
-    variables: optional, dict, ArrayCollector
-      The variables to save. If not provided, all variables retrieved by ``~.vars()`` will be used.
-    """
-    if variables is None:
-      variables = self.vars(method='absolute', level=-1)
-
-    from brainpy._src.checkpoints import io
-    if filename.endswith('.hdf5') or filename.endswith('.h5'):
-      io.save_as_h5(filename, variables=variables)
-    elif filename.endswith('.pkl') or filename.endswith('.pickle'):
-      io.save_as_pkl(filename, variables=variables)
-    elif filename.endswith('.npz'):
-      io.save_as_npz(filename, variables=variables, **setting)
-    elif filename.endswith('.mat'):
-      io.save_as_mat(filename, variables=variables)
-    else:
-      raise errors.BrainPyError(f'Unknown file format: {filename}. We only supports {io.SUPPORTED_FORMATS}')
 
   def to(self, device: Optional[Any]):
     """Moves all variables into the given device.
@@ -641,7 +688,14 @@ class ObjectTransform(BrainPyObject):
 
 class NodeList(list):
   """A sequence of :py:class:`~.BrainPyObject`, which is compatible with
-  :py:func:`.vars()` operation in a :py:class:`~.BrainPyObject`.
+  :py:func:`~.vars()` and :py:func:`~.nodes()` operations in a :py:class:`~.BrainPyObject`.
+
+  That is to say, any nodes that are wrapped into :py:class:`~.NodeList` will be automatically
+  retieved when using :py:func:`~.nodes()` function.
+
+  >>> import brainpy as bp
+  >>> l = bm.node_list([bp.dnn.Dense(1, 2),
+  >>>                   bp.dnn.LSTMCell(2, 3)])
   """
 
   def __init__(self, seq=()):
@@ -649,8 +703,8 @@ class NodeList(list):
     self.extend(seq)
 
   def append(self, element) -> 'NodeList':
-    if not isinstance(element, BrainPyObject):
-      raise TypeError(f'element must be an instance of {BrainPyObject.__name__}.')
+    # if not isinstance(element, BrainPyObject):
+    #   raise TypeError(f'element must be an instance of {BrainPyObject.__name__}.')
     super().append(element)
     return self
 
@@ -668,16 +722,17 @@ class NodeDict(dict):
   :py:func:`.vars()` operation in a :py:class:`~.BrainPyObject`.
   """
 
-  def _check_elem(self, elem):
-    if not isinstance(elem, BrainPyObject):
-      raise TypeError(f'Element should be {BrainPyObject.__name__}, but got {type(elem)}.')
-    return elem
+  # def _check_elem(self, elem):
+  #   if not isinstance(elem, BrainPyObject):
+  #     raise TypeError(f'Element should be {BrainPyObject.__name__}, but got {type(elem)}.')
+  #   return elem
 
-  def __init__(self, *args, **kwargs):
+  def __init__(self, *args, check_unique: bool = False, **kwargs):
     super().__init__()
+    self.check_unique = check_unique
     self.update(*args, **kwargs)
 
-  def update(self, *args, **kwargs) -> 'VarDict':
+  def update(self, *args, **kwargs) -> 'NodeDict':
     for arg in args:
       if isinstance(arg, dict):
         for k, v in arg.items():
@@ -689,10 +744,13 @@ class NodeDict(dict):
       self[k] = v
     return self
 
-  def __setitem__(self, key, value) -> 'VarDict':
-    super().__setitem__(key, self._check_elem(value))
+  def __setitem__(self, key, value) -> 'NodeDict':
+    if self.check_unique:
+      exist = self.get(key, None)
+      if id(exist) != id(value):
+        raise KeyError(f'Duplicate usage of key "{key}". "{key}" has been used for {value}.')
+    super().__setitem__(key, value)
     return self
 
 
 node_dict = NodeDict
-

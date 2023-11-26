@@ -138,7 +138,7 @@ class ExponentialEuler(ODEIntegrator):
     >>> import brainpy as bp
     >>> import brainpy.math as bm
     >>>
-    >>> class HH(bp.NeuGroup):
+    >>> class HH(bp.dyn.NeuDyn):
     >>>   def __init__(self, size, ENa=55., EK=-90., EL=-65, C=1.0, gNa=35., gK=9.,
     >>>                gL=0.1, V_th=20., phi=5.0, name=None):
     >>>     super(HH, self).__init__(size=size, name=name)
@@ -199,7 +199,7 @@ class ExponentialEuler(ODEIntegrator):
     >>>     self.n.value = n
     >>>     self.input[:] = 0.
     >>>
-    >>> run = bp.dyn.DSRunner(HH(1), inputs=('input', 2.), monitors=['V'], dt=0.05)
+    >>> run = bp.DSRunner(HH(1), inputs=('input', 2.), monitors=['V'], dt=0.05)
     >>> run(100)
     >>> bp.visualize.line_plot(run.mon.ts, run.mon.V, legend='V', show=True)
 
@@ -211,7 +211,7 @@ class ExponentialEuler(ODEIntegrator):
     >>> import brainpy as bp
     >>> import brainpy.math as bm
     >>>
-    >>> class HH(bp.NeuGroup):
+    >>> class HH(bp.dyn.NeuDyn):
     >>>   def __init__(self, size, ENa=55., EK=-90., EL=-65, C=1.0, gNa=35., gK=9.,
     >>>                gL=0.1, V_th=20., phi=5.0, name=None):
     >>>     super(HH, self).__init__(size=size, name=name)
@@ -269,7 +269,7 @@ class ExponentialEuler(ODEIntegrator):
     >>>     self.n.value = n
     >>>     self.input[:] = 0.
     >>>
-    >>> run = bp.dyn.DSRunner(HH(1), inputs=('input', 2.), monitors=['V'], dt=0.05)
+    >>> run = bp.DSRunner(HH(1), inputs=('input', 2.), monitors=['V'], dt=0.05)
     >>> run(100)
     >>> bp.visualize.line_plot(run.mon.ts, run.mon.V, legend='V', show=True)
 

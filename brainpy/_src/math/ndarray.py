@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import operator
-from typing import Union, Optional, Sequence
+from typing import Union, Optional, Sequence, Any
 
 import jax
 import numpy as np
@@ -14,6 +14,7 @@ from brainpy.errors import MathError
 
 __all__ = [
   'Array', 'ndarray', 'JaxArray',  # alias of Array
+  'ShardedArray',
 ]
 
 # Ways to change values in a zero-dimensional array
@@ -63,12 +64,24 @@ def _get_dtype(v):
 @register_pytree_node_class
 class Array(object):
   """Multiple-dimensional array in BrainPy.
+
+  Compared to ``jax.Array``, :py:class:`~.Array` has the following advantages:
+
+  - In-place updating is supported.
+
+  >>> import brainpy.math as bm
+  >>> a = bm.asarray([1, 2, 3.])
+  >>> a[0] = 10.
+
+  - Keep sharding constraints during computation.
+
+  - More dense array operations with PyTorch syntax.
+
   """
 
-  is_brainpy_array = True
-  __slots__ = ("_value",)
+  __slots__ = ('_value', '_keep_sharding')
 
-  def __init__(self, value, dtype=None):
+  def __init__(self, value, dtype: Any = None):
     # array value
     if isinstance(value, Array):
       value = value._value
@@ -80,7 +93,7 @@ class Array(object):
 
   def _check_tracer(self):
     self_value = self.value
-    if hasattr(self_value, '_trace'):
+    if hasattr(self_value, '_trace') and hasattr(self_value._trace.main, 'jaxpr_stack'):
       if len(self_value._trace.main.jaxpr_stack) == 0:
         raise RuntimeError('This Array is modified during the transformation. '
                            'BrainPy only supports transformations for Variable. '
@@ -88,7 +101,16 @@ class Array(object):
     return self_value
 
   @property
+  def sharding(self):
+    return self._value.sharding
+
+  @property
+  def addressable_shards(self):
+    return self._value.addressable_shards
+
+  @property
   def value(self):
+    # return the value
     return self._value
 
   @value.setter
@@ -740,7 +762,7 @@ class Array(object):
     sub-arrays : list of ndarrays
       A list of sub-arrays as views into `ary`.
     """
-    return [_return(a) for a in self.value.split(indices_or_sections, axis=axis)]
+    return [_return(a) for a in jnp.split(self.value, indices_or_sections, axis=axis)]
 
   def take(self, indices, axis=None, mode=None):
     """Return an array formed from the elements of a at the given indices."""
@@ -1159,7 +1181,7 @@ class Array(object):
       *,
       beta: float = 1.0,
       alpha: float = 1.0
-  ) -> None:
+  ):
     vec1 = _as_jax_array_(vec1)
     vec2 = _as_jax_array_(vec2)
     r = alpha * jnp.outer(vec1, vec2) + beta * self.value
@@ -1195,12 +1217,11 @@ class Array(object):
     """
     return self.abs(out=out)
 
-  def absolute_(self) -> None:
+  def absolute_(self):
     """
     alias of Array.abs_()
     """
     return self.abs_()
-
 
   def mul(self, value):
     return Array(self.value * value)
@@ -1237,11 +1258,11 @@ class Array(object):
       _check_out(out)
       out.value = r
 
-  def sin_(self) -> None:
+  def sin_(self):
     self.value = jnp.sin(self.value)
     return self
 
-  def cos_(self) -> None:
+  def cos_(self):
     self.value = jnp.cos(self.value)
     return self
 
@@ -1253,7 +1274,7 @@ class Array(object):
       _check_out(out)
       out.value = r
 
-  def tan_(self) -> None:
+  def tan_(self):
     self.value = jnp.tan(self.value)
     return self
 
@@ -1265,7 +1286,7 @@ class Array(object):
       _check_out(out)
       out.value = r
 
-  def sinh_(self) -> None:
+  def sinh_(self):
     self.value = jnp.tanh(self.value)
     return self
 
@@ -1277,7 +1298,7 @@ class Array(object):
       _check_out(out)
       out.value = r
 
-  def cosh_(self) -> None:
+  def cosh_(self):
     self.value = jnp.cosh(self.value)
     return self
 
@@ -1289,7 +1310,7 @@ class Array(object):
       _check_out(out)
       out.value = r
 
-  def tanh_(self) -> None:
+  def tanh_(self):
     self.value = jnp.tanh(self.value)
     return self
 
@@ -1301,7 +1322,7 @@ class Array(object):
       _check_out(out)
       out.value = r
 
-  def arcsin_(self) -> None:
+  def arcsin_(self):
     self.value = jnp.arcsin(self.value)
     return self
 
@@ -1313,7 +1334,7 @@ class Array(object):
       _check_out(out)
       out.value = r
 
-  def arccos_(self) -> None:
+  def arccos_(self):
     self.value = jnp.arccos(self.value)
     return self
 
@@ -1325,7 +1346,7 @@ class Array(object):
       _check_out(out)
       out.value = r
 
-  def arctan_(self) -> None:
+  def arctan_(self):
     self.value = jnp.arctan(self.value)
     return self
 
@@ -1360,7 +1381,7 @@ class Array(object):
 
   def clamp_(self,
              min_value: Optional[Union['Array', jax.Array, np.ndarray]] = None,
-             max_value: Optional[Union['Array', jax.Array, np.ndarray]] = None) -> None:
+             max_value: Optional[Union['Array', jax.Array, np.ndarray]] = None):
     """
     return the value between min_value and max_value,
     if min_value is None, then no lower bound,
@@ -1371,7 +1392,7 @@ class Array(object):
 
   def clip_(self,
             min_value: Optional[Union['Array', jax.Array, np.ndarray]] = None,
-            max_value: Optional[Union['Array', jax.Array, np.ndarray]] = None) -> None:
+            max_value: Optional[Union['Array', jax.Array, np.ndarray]] = None):
     """
     alias for clamp_
     """
@@ -1381,7 +1402,7 @@ class Array(object):
   def clone(self) -> 'Array':
     return Array(self.value.copy())
 
-  def copy_(self, src: Union['Array', jax.Array, np.ndarray]) -> None:
+  def copy_(self, src: Union['Array', jax.Array, np.ndarray]) -> 'Array':
     self.value = jnp.copy(_as_jax_array_(src))
     return self
 
@@ -1437,7 +1458,7 @@ class Array(object):
     return Array(jnp.broadcast_to(self.value, sizes_list))
 
   def tree_flatten(self):
-    return (self._value,), None
+    return (self.value,), None
 
   @classmethod
   def tree_unflatten(cls, aux_data, flat_contents):
@@ -1486,6 +1507,73 @@ class Array(object):
     self.value = jax.device_put(self.value, jax.devices('cpu')[0])
     return self
 
+  # dtype exchanging #
+  # ---------------- #
+
+  def bool(self): return jnp.asarray(self.value, dtype=jnp.bool_)
+  def int(self): return jnp.asarray(self.value, dtype=jnp.int32)
+  def long(self): return jnp.asarray(self.value, dtype=jnp.int64)
+  def half(self): return jnp.asarray(self.value, dtype=jnp.float16)
+  def float(self): return jnp.asarray(self.value, dtype=jnp.float32)
+  def double(self): return jnp.asarray(self.value, dtype=jnp.float64)
+
+
+setattr(Array, "__array_priority__", 100)
 
 JaxArray = Array
 ndarray = Array
+
+
+@register_pytree_node_class
+class ShardedArray(Array):
+  """The sharded array, which stores data across multiple devices.
+
+  A drawback of sharding is that the data may not be evenly distributed on shards.
+
+  Args:
+    value: the array value.
+    dtype: the array type.
+    keep_sharding: keep the array sharding information using ``jax.lax.with_sharding_constraint``. Default True.
+  """
+
+  __slots__ = ('_value', '_keep_sharding')
+
+  def __init__(self, value, dtype: Any = None, *, keep_sharding: bool = True):
+    super().__init__(value, dtype)
+    self._keep_sharding = keep_sharding
+
+  @property
+  def value(self):
+    """The value stored in this array.
+
+    Returns:
+      The stored data.
+    """
+    # keep sharding constraints
+    if self._keep_sharding and hasattr(self._value, 'sharding') and (self._value.sharding is not None):
+        return jax.lax.with_sharding_constraint(self._value, self._value.sharding)
+    # return the value
+    return self._value
+
+  @value.setter
+  def value(self, value):
+    self_value = self._check_tracer()
+
+    if isinstance(value, Array):
+      value = value.value
+    elif isinstance(value, np.ndarray):
+      value = jnp.asarray(value)
+    elif isinstance(value, jax.Array):
+      pass
+    else:
+      value = jnp.asarray(value)
+    # check
+    if value.shape != self_value.shape:
+      raise MathError(f"The shape of the original data is {self_value.shape}, "
+                      f"while we got {value.shape}.")
+    if value.dtype != self_value.dtype:
+      raise MathError(f"The dtype of the original data is {self_value.dtype}, "
+                      f"while we got {value.dtype}.")
+    self._value = value.value if isinstance(value, Array) else value
+
+

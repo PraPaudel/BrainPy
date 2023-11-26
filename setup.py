@@ -51,7 +51,7 @@ setup(
   author_email='chao.brain@qq.com',
   packages=packages,
   python_requires='>=3.8',
-  install_requires=['numpy>=1.15', 'jax>=0.4.1', 'tqdm', 'msgpack'],
+  install_requires=['numpy>=1.15', 'jax', 'tqdm', 'msgpack', 'numba'],
   url='https://github.com/brainpy/BrainPy',
   project_urls={
     "Bug Tracker": "https://github.com/brainpy/BrainPy/issues",
@@ -70,7 +70,6 @@ setup(
     'Operating System :: OS Independent',
     'Programming Language :: Python',
     'Programming Language :: Python :: 3',
-    'Programming Language :: Python :: 3.8',
     'Programming Language :: Python :: 3.9',
     'Programming Language :: Python :: 3.10',
     'Programming Language :: Python :: 3.11',

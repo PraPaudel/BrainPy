@@ -11,6 +11,7 @@ import numpy as np
 from jax import lax, jit, vmap, numpy as jnp, random as jr, core, dtypes
 from jax.experimental.host_callback import call
 from jax.tree_util import register_pytree_node_class
+from jax._src.array import ArrayImpl
 
 from brainpy.check import jit_error
 from .compat_numpy import shape
@@ -21,7 +22,7 @@ from .object_transform.variables import Variable
 __all__ = [
   'RandomState', 'Generator', 'DEFAULT',
 
-  'seed', 'default_rng', 'split_key',
+  'seed', 'default_rng', 'split_key', 'split_keys',
 
   # numpy compatibility
   'rand', 'randint', 'random_integers', 'randn', 'random',
@@ -56,12 +57,10 @@ def _formalize_key(key):
 def _size2shape(size):
   if size is None:
     return ()
-  elif isinstance(size, int):
-    return (size,)
   elif isinstance(size, (tuple, list)):
     return tuple(size)
   else:
-    raise ValueError(f'Must be a list/tuple of int, but got {size}')
+    return (size, )
 
 
 def _check_shape(name, shape, *param_shapes):
@@ -446,7 +445,7 @@ class RandomState(Variable):
       self,
       seed_or_key: Optional[Union[int, Array, jax.Array, np.ndarray]] = None,
       seed: Optional[int] = None,
-      _ready_to_trace: bool = True,
+      ready_to_trace: bool = True,
   ):
     """RandomState constructor.
 
@@ -481,13 +480,21 @@ class RandomState(Variable):
         raise ValueError('key must be an array with dtype uint32. '
                          f'But we got {seed_or_key}')
       key = seed_or_key
-    super(RandomState, self).__init__(key, _ready_to_trace=_ready_to_trace)
+    super(RandomState, self).__init__(key, ready_to_trace=ready_to_trace)
 
   def __repr__(self) -> str:
     print_code = repr(self.value)
     i = print_code.index('(')
     name = self.__class__.__name__
     return f'{name}(key={print_code[i:]})'
+
+  @property
+  def value(self):
+    if isinstance(self._value, ArrayImpl):
+      if self._value.is_deleted():
+        self.seed()
+    self._append_to_stack()
+    return self._value
 
   # ------------------- #
   # seed and random key #
@@ -563,7 +570,7 @@ class RandomState(Variable):
     r = jr.uniform(key, shape=dn, minval=0., maxval=1.)
     return _return(r)
 
-  def randint(self, low, high=None, size=None, dtype=None, key=None):
+  def randint(self, low, high=None, size=None, dtype=int, key=None):
     dtype = get_int() if dtype is None else dtype
     low = _as_jax_array(low)
     high = _as_jax_array(high)
@@ -1244,7 +1251,31 @@ def split_key():
   return DEFAULT.split_key()
 
 
+def split_keys(n):
+  """Create multiple seeds from the current seed. This is used
+  internally by `pmap` and `vmap` to ensure that random numbers
+  are different in parallel threads.
+
+  .. versionadded:: 2.4.5
+
+  Parameters
+  ----------
+  n : int
+    The number of seeds to generate.
+  """
+  return DEFAULT.split_keys(n)
+
+
 def clone_rng(seed_or_key=None, clone: bool = True) -> RandomState:
+  """Clone the random state according to the given setting.
+
+  Args:
+    seed_or_key: The seed (an integer) or the random key.
+    clone: Bool. Whether clone the default random state.
+
+  Returns:
+    The random state.
+  """
   if seed_or_key is None:
     return DEFAULT.clone() if clone else DEFAULT
   else:
@@ -1311,7 +1342,7 @@ def rand(*dn, key=None):
   return DEFAULT.rand(*dn, key=key)
 
 
-def randint(low, high=None, size=None, dtype=jnp.int_, key=None):
+def randint(low, high=None, size=None, dtype=int, key=None):
   r"""Return random integers from `low` (inclusive) to `high` (exclusive).
 
   Return random integers from the "discrete uniform" distribution of

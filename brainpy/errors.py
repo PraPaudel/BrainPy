@@ -6,6 +6,10 @@ class BrainPyError(Exception):
   pass
 
 
+class APIChangedError(BrainPyError):
+  pass
+
+
 class RunningError(BrainPyError):
   """The error occurred in the running function."""
   pass
@@ -230,5 +234,11 @@ GPU operator for "{name}" does not found.
 
 Please install brainpylib GPU operators with linux + CUDA environment.
     ''')
+
+
+
+
+class SharedArgError(BrainPyError):
+  pass
 
 

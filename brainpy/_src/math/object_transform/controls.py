@@ -13,7 +13,7 @@ from jax.experimental.host_callback import id_tap
 from brainpy import errors, tools
 from brainpy._src.math.interoperability import as_jax
 from brainpy._src.math.ndarray import (Array, )
-from ._tools import (
+from .tools import (
   evaluate_dyn_vars,
   evaluate_dyn_vars_with_cache,
   dynvar_deprecation,
@@ -31,7 +31,6 @@ from .variables import (
   VariableStack,
   new_transform,
   current_transform_number,
-  transform_stack,
 )
 
 __all__ = [
@@ -526,25 +525,17 @@ def cond(
   node_deprecation(child_objs)
 
   dyn_vars = get_stack_cache((true_fun, false_fun))
-  _transform = _get_cond_transform(VariableStack() if dyn_vars is None else dyn_vars,
-                                   pred,
-                                   true_fun,
-                                   false_fun)
-  if jax.config.jax_disable_jit:
-    dyn_values, res = _transform(operands)
-
-  else:
+  if not jax.config.jax_disable_jit:
     if dyn_vars is None:
       with new_transform('cond'):
-        dyn_vars, rets = evaluate_dyn_vars(
-          _transform,
-          operands,
-          use_eval_shape=current_transform_number() <= 1
-        )
+        dyn_vars1, rets = evaluate_dyn_vars(true_fun, *operands, use_eval_shape=current_transform_number() <= 1)
+        dyn_vars2, rets = evaluate_dyn_vars(false_fun, *operands, use_eval_shape=current_transform_number() <= 1)
+        dyn_vars = dyn_vars1 + dyn_vars2
         cache_stack((true_fun, false_fun), dyn_vars)
       if current_transform_number() > 0:
-        return rets[1]
-    dyn_values, res = _get_cond_transform(dyn_vars, pred, true_fun, false_fun)(operands)
+        return rets
+  dyn_vars = VariableStack() if dyn_vars is None else dyn_vars
+  dyn_values, res = _get_cond_transform(dyn_vars, pred, true_fun, false_fun)(operands)
   for k in dyn_values.keys():
     dyn_vars[k]._value = dyn_values[k]
   return res
@@ -593,11 +584,11 @@ def ifelse(
   >>> import brainpy.math as bm
   >>> def f(a):
   >>>    return bm.ifelse(conditions=[a > 10, a > 5, a > 2, a > 0],
-  >>>                     branches=[lambda _: 1,
-  >>>                               lambda _: 2,
-  >>>                               lambda _: 3,
-  >>>                               lambda _: 4,
-  >>>                               lambda _: 5])
+  >>>                     branches=[lambda: 1,
+  >>>                               lambda: 2,
+  >>>                               lambda: 3,
+  >>>                               lambda: 4,
+  >>>                               lambda: 5])
   >>> f(1)
   4
   >>> # or, it can be expressed as:
@@ -722,12 +713,13 @@ def _get_for_loop_transform(
     progress_bar: bool,
     remat: bool,
     reverse: bool,
-    unroll: int
+    unroll: int,
+    unroll_kwargs: tools.DotDict
 ):
   def fun2scan(carry, x):
     for k in dyn_vars.keys():
       dyn_vars[k]._value = carry[k]
-    results = body_fun(*x)
+    results = body_fun(*x, **unroll_kwargs)
     if progress_bar:
       id_tap(lambda *arg: bar.update(), ())
     return dyn_vars.dict_data(), results
@@ -753,6 +745,7 @@ def for_loop(
     remat: bool = False,
     jit: Optional[bool] = None,
     progress_bar: bool = False,
+    unroll_kwargs: Optional[Dict] = None,
 
     # deprecated
     dyn_vars: Union[Variable, Sequence[Variable], Dict[str, Variable]] = None,
@@ -767,8 +760,7 @@ def for_loop(
      Please change your call from ``for_loop(fun, dyn_vars, operands)``
      to ``for_loop(fun, operands, dyn_vars)``.
 
-  Simply speaking, all dynamically changed variables used in the body function should
-  be labeld in ``dyn_vars`` argument. All returns in body function will be gathered
+  All returns in body function will be gathered
   as the return of the whole loop.
 
   >>> import brainpy.math as bm
@@ -845,6 +837,8 @@ def for_loop(
     .. deprecated:: 2.4.0
        No longer need to provide ``child_objs``. This function is capable of automatically
        collecting the children objects used in the target ``func``.
+  unroll_kwargs: dict
+    The keyword arguments without unrolling.
 
   Returns
   -------
@@ -854,6 +848,10 @@ def for_loop(
 
   dynvar_deprecation(dyn_vars)
   node_deprecation(child_objs)
+
+  if unroll_kwargs is None:
+    unroll_kwargs = dict()
+  unroll_kwargs = tools.DotDict(unroll_kwargs)
 
   if not isinstance(operands, (list, tuple)):
     operands = (operands,)
@@ -865,19 +863,20 @@ def for_loop(
 
   if jit is None:  # jax disable jit
     jit = not jax.config.jax_disable_jit
-  dyn_vars = get_stack_cache(body_fun)
+  dyn_vars = get_stack_cache((body_fun, unroll_kwargs))
   if jit:
     if dyn_vars is None:
       # TODO: better cache mechanism?
       with new_transform('for_loop'):
         with VariableStack() as dyn_vars:
           transform = _get_for_loop_transform(body_fun, VariableStack(), bar,
-                                              progress_bar, remat, reverse, unroll)
+                                              progress_bar, remat, reverse, unroll,
+                                              unroll_kwargs)
           if current_transform_number() > 1:
             rets = transform(operands)
           else:
             rets = jax.eval_shape(transform, operands)
-      cache_stack(body_fun, dyn_vars)  # cache
+      cache_stack((body_fun, unroll_kwargs), dyn_vars)  # cache
       if current_transform_number():
         return rets[1]
       del rets
@@ -885,7 +884,9 @@ def for_loop(
     dyn_vars = VariableStack()
 
   # TODO: cache mechanism?
-  transform = _get_for_loop_transform(body_fun, dyn_vars, bar, progress_bar, remat, reverse, unroll)
+  transform = _get_for_loop_transform(body_fun, dyn_vars, bar,
+                                      progress_bar, remat, reverse,
+                                      unroll, unroll_kwargs)
   if jit:
     dyn_vals, out_vals = transform(operands)
   else:
@@ -999,22 +1000,17 @@ def while_loop(
   if not isinstance(operands, (list, tuple)):
     operands = (operands,)
 
-  if jax.config.jax_disable_jit:
-    dyn_vars = VariableStack()
-
-  else:
-    dyn_vars = get_stack_cache(body_fun)
-
+  dyn_vars = get_stack_cache((body_fun, cond_fun))
+  if not jax.config.jax_disable_jit:
     if dyn_vars is None:
       with new_transform('while_loop'):
-        dyn_vars, rets = evaluate_dyn_vars(
-          _get_while_transform(cond_fun, body_fun, VariableStack()),
-          operands
-        )
-        cache_stack(body_fun, dyn_vars)
+        dyn_vars1, _ = evaluate_dyn_vars(cond_fun, *operands, use_eval_shape=current_transform_number() <= 1)
+        dyn_vars2, rets = evaluate_dyn_vars(body_fun, *operands, use_eval_shape=current_transform_number() <= 1)
+        dyn_vars = dyn_vars1 + dyn_vars2
+        cache_stack((body_fun, cond_fun), dyn_vars)
       if current_transform_number():
-        return rets[1]
-
+        return rets
+  dyn_vars = VariableStack() if dyn_vars is None else dyn_vars
   dyn_values, out = _get_while_transform(cond_fun, body_fun, dyn_vars)(operands)
   for k, v in dyn_vars.items():
     v._value = dyn_values[k]
