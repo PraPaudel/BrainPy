@@ -1,37 +1,32 @@
 # -*- coding: utf-8 -*-
+
 import functools
-from typing import Union, Sequence, Any, Dict, Callable, Optional
 import numbers
+from typing import Union, Sequence, Any, Dict, Callable, Optional
 
 import jax
 import jax.numpy as jnp
 from jax.errors import UnexpectedTracerError
+from jax.experimental.host_callback import id_tap
 from jax.tree_util import tree_flatten, tree_unflatten
 from tqdm.auto import tqdm
-from jax.experimental.host_callback import id_tap
 
 from brainpy import errors, tools
 from brainpy._src.math.interoperability import as_jax
-from brainpy._src.math.ndarray import (Array, )
-from .tools import (
-  evaluate_dyn_vars,
-  evaluate_dyn_vars_with_cache,
-  dynvar_deprecation,
-  node_deprecation,
-  abstract
-)
+from brainpy._src.math.ndarray import (Array, _as_jax_array_)
 from .base import BrainPyObject, ObjectTransform
 from .naming import (
   get_unique_name,
   get_stack_cache,
   cache_stack
 )
-from .variables import (
-  Variable,
-  VariableStack,
-  new_transform,
-  current_transform_number,
+from .tools import (
+  eval_shape,
+  dynvar_deprecation,
+  node_deprecation,
+  abstract
 )
+from .variables import (Variable, VariableStack)
 
 __all__ = [
   'make_loop',
@@ -41,6 +36,7 @@ __all__ = [
   'cond',
   'ifelse',
   'for_loop',
+  'scan',
   'while_loop',
 ]
 
@@ -421,11 +417,27 @@ def make_cond(
   return ControlObject(call, dyn_vars, repr_fun={'true_fun': true_fun, 'false_fun': false_fun})
 
 
+@functools.cache
+def _warp(f):
+  @functools.wraps(f)
+  def new_f(*args, **kwargs):
+    return jax.tree_map(_as_jax_array_, f(*args, **kwargs), is_leaf=lambda a: isinstance(a, Array))
+
+  return new_f
+
+
+def _warp_data(data):
+  def new_f(*args, **kwargs):
+    return jax.tree_map(_as_jax_array_, data, is_leaf=lambda a: isinstance(a, Array))
+
+  return new_f
+
+
 def _check_f(f):
   if callable(f):
-    return f
+    return _warp(f)
   else:
-    return (lambda *args, **kwargs: f)
+    return _warp_data(f)
 
 
 def _check_sequence(a):
@@ -525,15 +537,13 @@ def cond(
   node_deprecation(child_objs)
 
   dyn_vars = get_stack_cache((true_fun, false_fun))
-  if not jax.config.jax_disable_jit:
-    if dyn_vars is None:
-      with new_transform('cond'):
-        dyn_vars1, rets = evaluate_dyn_vars(true_fun, *operands, use_eval_shape=current_transform_number() <= 1)
-        dyn_vars2, rets = evaluate_dyn_vars(false_fun, *operands, use_eval_shape=current_transform_number() <= 1)
-        dyn_vars = dyn_vars1 + dyn_vars2
-        cache_stack((true_fun, false_fun), dyn_vars)
-      if current_transform_number() > 0:
-        return rets
+  if not jax.config.jax_disable_jit and dyn_vars is None:
+    with VariableStack() as dyn_vars:
+      rets = eval_shape(true_fun, *operands, with_stack=True)[1]
+      _ = eval_shape(false_fun, *operands, with_stack=True)
+      cache_stack((true_fun, false_fun), dyn_vars)
+    if not dyn_vars.is_first_stack():
+      return rets
   dyn_vars = VariableStack() if dyn_vars is None else dyn_vars
   dyn_values, res = _get_cond_transform(dyn_vars, pred, true_fun, false_fun)(operands)
   for k in dyn_values.keys():
@@ -557,7 +567,7 @@ def _if_else_return2(conditions, branches):
     return branches[-1]
 
 
-def all_equal(iterator):
+def _all_equal(iterator):
   iterator = iter(iterator)
   try:
     first = next(iterator)
@@ -664,22 +674,17 @@ def ifelse(
     else:
       dyn_vars = get_stack_cache(tuple(branches))
       if dyn_vars is None:
-        with new_transform('ifelse'):
-          with VariableStack() as dyn_vars:
-            if current_transform_number() > 1:
-              rets = [branch(*operands) for branch in branches]
-            else:
-              rets = [jax.eval_shape(branch, *operands) for branch in branches]
-            trees = [jax.tree_util.tree_structure(ret) for ret in rets]
-            if not all_equal(trees):
-              msg = 'All returns in branches should have the same tree structure. But we got:\n'
-              for tree in trees:
-                msg += f'- {tree}\n'
-              raise TypeError(msg)
+        with VariableStack() as dyn_vars:
+          rets = [eval_shape(fun, *operands, with_stack=True)[1] for fun in branches]
+          trees = [jax.tree_util.tree_structure(ret) for ret in rets]
+          if not _all_equal(trees):
+            msg = 'All returns in branches should have the same tree structure. But we got:\n'
+            for tree in trees:
+              msg += f'- {tree}\n'
+            raise TypeError(msg)
           cache_stack(tuple(branches), dyn_vars)
-        if current_transform_number():
-          return _if_else_return2(conditions, rets)
-
+        if not dyn_vars.is_first_stack():
+          return rets[0]
       branches = [_cond_transform_fun(fun, dyn_vars) for fun in branches]
 
     code_scope = {'conditions': conditions, 'branches': branches}
@@ -716,6 +721,7 @@ def _get_for_loop_transform(
     unroll: int,
     unroll_kwargs: tools.DotDict
 ):
+  @functools.wraps(body_fun)
   def fun2scan(carry, x):
     for k in dyn_vars.keys():
       dyn_vars[k]._value = carry[k]
@@ -856,35 +862,30 @@ def for_loop(
   if not isinstance(operands, (list, tuple)):
     operands = (operands,)
 
-  num_total = min([op.shape[0] for op in jax.tree_util.tree_flatten(operands)[0]])
   bar = None
   if progress_bar:
+    num_total = min([op.shape[0] for op in jax.tree_util.tree_flatten(operands)[0]])
     bar = tqdm(total=num_total)
 
   if jit is None:  # jax disable jit
     jit = not jax.config.jax_disable_jit
-  dyn_vars = get_stack_cache((body_fun, unroll_kwargs))
+  stack = get_stack_cache((body_fun, unroll_kwargs))
   if jit:
-    if dyn_vars is None:
+    if stack is None:
+      transform = _get_for_loop_transform(body_fun, VariableStack(), bar, progress_bar,
+                                          remat, reverse, unroll, unroll_kwargs)
       # TODO: better cache mechanism?
-      with new_transform('for_loop'):
-        with VariableStack() as dyn_vars:
-          transform = _get_for_loop_transform(body_fun, VariableStack(), bar,
-                                              progress_bar, remat, reverse, unroll,
-                                              unroll_kwargs)
-          if current_transform_number() > 1:
-            rets = transform(operands)
-          else:
-            rets = jax.eval_shape(transform, operands)
-      cache_stack((body_fun, unroll_kwargs), dyn_vars)  # cache
-      if current_transform_number():
+      with VariableStack() as stack:
+        rets = eval_shape(transform, operands)
+        cache_stack((body_fun, unroll_kwargs), stack)  # cache
+      if not stack.is_first_stack():
         return rets[1]
       del rets
   else:
-    dyn_vars = VariableStack()
+    stack = VariableStack()
 
   # TODO: cache mechanism?
-  transform = _get_for_loop_transform(body_fun, dyn_vars, bar,
+  transform = _get_for_loop_transform(body_fun, stack, bar,
                                       progress_bar, remat, reverse,
                                       unroll, unroll_kwargs)
   if jit:
@@ -892,11 +893,126 @@ def for_loop(
   else:
     with jax.disable_jit():
       dyn_vals, out_vals = transform(operands)
-  for key in dyn_vars.keys():
-    dyn_vars[key]._value = dyn_vals[key]
+  for key in stack.keys():
+    stack[key]._value = dyn_vals[key]
   if progress_bar:
     bar.close()
+  del dyn_vals, stack
   return out_vals
+
+
+def _get_scan_transform(
+    body_fun: Callable,
+    dyn_vars: VariableStack,
+    bar: tqdm,
+    progress_bar: bool,
+    remat: bool,
+    reverse: bool,
+    unroll: int,
+):
+  def fun2scan(carry, x):
+    dyn_vars_data, carry = carry
+    for k in dyn_vars.keys():
+      dyn_vars[k]._value = dyn_vars_data[k]
+    carry, results = body_fun(carry, x)
+    if progress_bar:
+      id_tap(lambda *arg: bar.update(), ())
+    carry = jax.tree_map(_as_jax_array_, carry, is_leaf=lambda a: isinstance(a, Array))
+    return (dyn_vars.dict_data(), carry), results
+
+  if remat:
+    fun2scan = jax.checkpoint(fun2scan)
+
+  def call(init, operands):
+    init = jax.tree_map(_as_jax_array_, init, is_leaf=lambda a: isinstance(a, Array))
+    return jax.lax.scan(f=fun2scan,
+                        init=(dyn_vars.dict_data(), init),
+                        xs=operands,
+                        reverse=reverse,
+                        unroll=unroll)
+
+  return call
+
+
+def scan(
+    body_fun: Callable,
+    init: Any,
+    operands: Any,
+    reverse: bool = False,
+    unroll: int = 1,
+    remat: bool = False,
+    progress_bar: bool = False,
+):
+  """``scan`` control flow with :py:class:`~.Variable`.
+
+  Similar to ``jax.lax.scan``.
+
+  .. versionadded:: 2.4.7
+
+  All returns in body function will be gathered
+  as the return of the whole loop.
+
+  Parameters
+  ----------
+  body_fun: callable
+    A Python function to be scanned. This function accepts one argument and returns one output.
+    The argument denotes a slice of ``operands`` along its leading axis, and that
+    output represents a slice of the return value.
+  init: Any
+    An initial loop carry value of type ``c``, which can be a scalar, array, or any pytree
+    (nested Python tuple/list/dict) thereof, representing the initial loop carry value.
+    This value must have the same structure as the first element of the pair returned
+    by ``body_fun``.
+  operands: Any
+    The value over which to scan along the leading axis,
+    where ``operands`` can be an array or any pytree (nested Python
+    tuple/list/dict) thereof with consistent leading axis sizes.
+    If body function `body_func` receives multiple arguments,
+    `operands` should be a tuple/list whose length is equal to the
+    number of arguments.
+  remat: bool
+    Make ``fun`` recompute internal linearization points when differentiated.
+  reverse: bool
+    Optional boolean specifying whether to run the scan iteration
+    forward (the default) or in reverse, equivalent to reversing the leading
+    axes of the arrays in both ``xs`` and in ``ys``.
+  unroll: int
+    Optional positive int specifying, in the underlying operation of the
+    scan primitive, how many scan iterations to unroll within a single
+    iteration of a loop.
+  progress_bar: bool
+    Whether we use the progress bar to report the running progress.
+
+    .. versionadded:: 2.4.2
+
+  Returns
+  -------
+  outs: Any
+    The stacked outputs of ``body_fun`` when scanned over the leading axis of the inputs.
+  """
+  bar = None
+  if progress_bar:
+    num_total = min([op.shape[0] for op in jax.tree_util.tree_flatten(operands)[0]])
+    bar = tqdm(total=num_total)
+
+  stack = get_stack_cache(body_fun)
+  if not jax.config.jax_disable_jit and stack is None:
+    transform = _get_scan_transform(body_fun, VariableStack(), bar, progress_bar, remat, reverse, unroll)
+    with VariableStack() as stack:
+      rets = eval_shape(transform, init, operands)
+    cache_stack(body_fun, stack)  # cache
+    if not stack.is_first_stack():
+      return rets[0][1], rets[1]
+    del rets
+
+  stack = VariableStack() if stack is None else stack
+  transform = _get_scan_transform(body_fun, stack, bar, progress_bar, remat, reverse, unroll)
+  (dyn_vals, carry), out_vals = transform(init, operands)
+  for key in stack.keys():
+    stack[key]._value = dyn_vals[key]
+  if progress_bar:
+    bar.close()
+  return carry, out_vals
 
 
 def _get_while_transform(cond_fun, body_fun, dyn_vars):
@@ -992,7 +1108,6 @@ def while_loop(
        No longer need to provide ``child_objs``. This function is capable of automatically
        collecting the children objects used in the target ``func``.
 
-
   """
   dynvar_deprecation(dyn_vars)
   node_deprecation(child_objs)
@@ -1000,18 +1115,16 @@ def while_loop(
   if not isinstance(operands, (list, tuple)):
     operands = (operands,)
 
-  dyn_vars = get_stack_cache((body_fun, cond_fun))
-  if not jax.config.jax_disable_jit:
-    if dyn_vars is None:
-      with new_transform('while_loop'):
-        dyn_vars1, _ = evaluate_dyn_vars(cond_fun, *operands, use_eval_shape=current_transform_number() <= 1)
-        dyn_vars2, rets = evaluate_dyn_vars(body_fun, *operands, use_eval_shape=current_transform_number() <= 1)
-        dyn_vars = dyn_vars1 + dyn_vars2
-        cache_stack((body_fun, cond_fun), dyn_vars)
-      if current_transform_number():
-        return rets
-  dyn_vars = VariableStack() if dyn_vars is None else dyn_vars
-  dyn_values, out = _get_while_transform(cond_fun, body_fun, dyn_vars)(operands)
-  for k, v in dyn_vars.items():
+  stack = get_stack_cache((body_fun, cond_fun))
+  if not jax.config.jax_disable_jit and stack is None:
+    with VariableStack() as stack:
+      _ = eval_shape(cond_fun, *operands, with_stack=True)
+      rets = eval_shape(body_fun, *operands, with_stack=True)[1]
+      cache_stack((body_fun, cond_fun), stack)
+    if not stack.is_first_stack():
+      return rets
+  stack = VariableStack() if stack is None else stack
+  dyn_values, out = _get_while_transform(cond_fun, body_fun, stack)(operands)
+  for k, v in stack.items():
     v._value = dyn_values[k]
   return out

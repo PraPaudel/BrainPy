@@ -1,20 +1,27 @@
 # -*- coding: utf-8 -*-
 
 
-from typing import Optional
+from typing import Optional, Union
 
+import jax
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 
 from brainpy import check, tools
-from .environment import get_dt, get_int
-from .ndarray import Array
 from .compat_numpy import fill_diagonal
+from .environment import get_dt, get_int
+from .interoperability import as_jax
+from .ndarray import Array
 
 __all__ = [
   'shared_args_over_time',
   'remove_diag',
   'clip_by_norm',
+  'exprel',
+  'is_float_type',
+  # 'reduce',
+  'add_axis',
+  'add_axes',
 ]
 
 
@@ -82,3 +89,56 @@ def clip_by_norm(t, clip_norm, axis=None):
     return l * clip_norm / jnp.maximum(jnp.sqrt(jnp.sum(l * l, axis=axis, keepdims=True)), clip_norm)
 
   return tree_map(f, t)
+
+
+def _exprel(x, threshold):
+  def true_f(x):
+    x2 = x * x
+    return 1. + x / 2. + x2 / 6. + x2 * x / 24.0  # + x2 * x2 / 120.
+
+  def false_f(x):
+    return (jnp.exp(x) - 1) / x
+
+  # return jax.lax.cond(jnp.abs(x) < threshold, true_f, false_f, x)
+  return jnp.where(jnp.abs(x) <= threshold, 1. + x / 2. + x * x / 6., (jnp.exp(x) - 1) / x)
+
+
+def exprel(x, threshold: float = None):
+  """Relative error exponential, ``(exp(x) - 1)/x``.
+
+  When ``x`` is near zero, ``exp(x)`` is near 1, so the numerical calculation of ``exp(x) - 1`` can
+  suffer from catastrophic loss of precision. ``exprel(x)`` is implemented to avoid the loss of
+  precision that occurs when ``x`` is near zero.
+
+  Args:
+    x: ndarray. Input array. ``x`` must contain real numbers.
+    threshold: float.
+
+  Returns:
+    ``(exp(x) - 1)/x``, computed element-wise.
+  """
+  x = as_jax(x)
+  if threshold is None:
+    if hasattr(x, 'dtype') and x.dtype == jnp.float64:
+      threshold = 1e-8
+    else:
+      threshold = 1e-5
+  return _exprel(x, threshold)
+
+
+def is_float_type(x: Union[Array, jax.Array]):
+  return x.dtype in ("float16", "float32", "float64", "float128", "bfloat16")
+
+
+def add_axis(x: Union[Array, jax.Array], new_position: int):
+  x = as_jax(x)
+  return jnp.expand_dims(x, new_position)
+
+
+def add_axes(x: Union[Array, jax.Array], n_axes, pos2len):
+  x = as_jax(x)
+  repeats = [1] * n_axes
+  for axis_position, axis_length in pos2len.items():
+    x = add_axis(x, axis_position)
+    repeats[axis_position] = axis_length
+  return jnp.tile(x, repeats)

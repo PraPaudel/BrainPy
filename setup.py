@@ -3,6 +3,8 @@
 import io
 import os
 import re
+import time
+import sys
 
 from setuptools import find_packages
 from setuptools import setup
@@ -26,11 +28,16 @@ try:
 except ModuleNotFoundError:
   pass
 
+
 # version
 here = os.path.abspath(os.path.dirname(__file__))
 with open(os.path.join(here, 'brainpy', '__init__.py'), 'r') as f:
   init_py = f.read()
 version = re.search('__version__ = "(.*)"', init_py).groups()[0]
+if len(sys.argv) > 2 and sys.argv[2] == '--python-tag=py3':
+  version = version
+else:
+  version += '.post{}'.format(time.strftime("%Y%m%d", time.localtime()))
 
 # obtain long description from README
 with io.open(os.path.join(here, 'README.md'), 'r', encoding='utf-8') as f:
@@ -38,7 +45,6 @@ with io.open(os.path.join(here, 'README.md'), 'r', encoding='utf-8') as f:
 
 # installation packages
 packages = find_packages(exclude=['lib*', 'docs', 'tests'])
-
 
 # setup
 setup(
@@ -51,12 +57,22 @@ setup(
   author_email='chao.brain@qq.com',
   packages=packages,
   python_requires='>=3.8',
-  install_requires=['numpy>=1.15', 'jax', 'tqdm', 'msgpack', 'numba'],
+  install_requires=['numpy>=1.15', 'jax>=0.4.13', 'tqdm', 'numba', 'taichi==1.7.0'],
   url='https://github.com/brainpy/BrainPy',
   project_urls={
     "Bug Tracker": "https://github.com/brainpy/BrainPy/issues",
     "Documentation": "https://brainpy.readthedocs.io/",
     "Source Code": "https://github.com/brainpy/BrainPy",
+  },
+  dependency_links=[
+    'https://storage.googleapis.com/jax-releases/jax_cuda_releases.html',
+  ],
+  extras_require={
+    'cpu': ['jaxlib>=0.4.13', 'brainpylib'],
+    'cuda': ['jax[cuda]', 'brainpylib-cu12x'],
+    'cuda11': ['jax[cuda11_local]', 'brainpylib-cu11x'],
+    'cuda12': ['jax[cuda12_local]', 'brainpylib-cu12x'],
+    'tpu': ['jax[tpu]'],
   },
   keywords=('computational neuroscience, '
             'brain-inspired computation, '

@@ -1,6 +1,7 @@
-import brainpy as bp
-from absl.testing import parameterized
 from absl.testing import absltest
+from absl.testing import parameterized
+
+import brainpy as bp
 import brainpy.math as bm
 
 
@@ -212,7 +213,6 @@ class TestLinear(parameterized.TestCase):
     y2 = f(bm.as_jax(bm.random.random(shape + (100,)) < 0.1, dtype=float))
     self.assertTrue(y2.shape == shape + (200,))
     bm.clear_buffer_memory()
-
 
 if __name__ == '__main__':
   absltest.main()

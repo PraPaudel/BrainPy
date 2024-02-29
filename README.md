@@ -14,7 +14,7 @@
 </p>
 
 
-BrainPy is a flexible, efficient, and extensible framework for computational neuroscience and brain-inspired computation based on the Just-In-Time (JIT) compilation (built on top of [JAX](https://github.com/google/jax), [Numba](https://github.com/numba/numba), and other JIT compilers). It provides an integrative ecosystem for brain dynamics programming, including brain dynamics **building**, **simulation**, **training**, **analysis**, etc. 
+BrainPy is a flexible, efficient, and extensible framework for computational neuroscience and brain-inspired computation based on the Just-In-Time (JIT) compilation (built on top of [JAX](https://github.com/google/jax), [Taichi](https://github.com/taichi-dev/taichi), [Numba](https://github.com/numba/numba), and others). It provides an integrative ecosystem for brain dynamics programming, including brain dynamics **building**, **simulation**, **training**, **analysis**, etc. 
 
 - **Website (documentation and APIs)**: https://brainpy.readthedocs.io/en/latest
 - **Source**: https://github.com/brainpy/BrainPy
@@ -77,7 +77,9 @@ We provide a Binder environment for BrainPy. You can use the following button to
 - **[BrainPy](https://github.com/brainpy/BrainPy)**: The solution for the general-purpose brain dynamics programming. 
 - **[brainpy-examples](https://github.com/brainpy/examples)**: Comprehensive examples of BrainPy computation. 
 - **[brainpy-datasets](https://github.com/brainpy/datasets)**: Neuromorphic and Cognitive Datasets for Brain Dynamics Modeling.
+- [《神经计算建模实战》 (Neural Modeling in Action)](https://github.com/c-xy17/NeuralModeling)
 - [第一届神经计算建模与编程培训班 (First Training Course on Neural Modeling and Programming)](https://github.com/brainpy/1st-neural-modeling-and-programming-course)
+- [第二届神经计算建模与编程培训班 (Second Training Course on Neural Modeling and Programming)](https://github.com/brainpy/2nd-neural-modeling-and-programming-course)
 
 
 ## Citing 
@@ -102,4 +104,6 @@ We also welcome your contributions
 - [ ] pipeline parallelization on multiple devices for sparse spiking network models
 - [ ] multi-compartment modeling
 - [ ] measurements, analysis, and visualization methods for large-scale spiking data
+- [ ] Online learning methods for large-scale spiking network models
+- [ ] Classical plasticity rules for large-scale spiking network models
 

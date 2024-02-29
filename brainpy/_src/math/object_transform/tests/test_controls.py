@@ -1,14 +1,11 @@
 # -*- coding: utf-8 -*-
-import sys
 import tempfile
 import unittest
 from functools import partial
 
 import jax
-from jax import vmap
-
 from absl.testing import parameterized
-from jax._src import test_util as jtu
+from jax import vmap
 
 import brainpy as bp
 import brainpy.math as bm
@@ -132,6 +129,69 @@ class TestLoop(parameterized.TestCase):
     self.assertTrue(bm.allclose(cls.a, 10.))
 
 
+class TestScan(unittest.TestCase):
+  def test1(self):
+    a = bm.Variable(1)
+
+    def f(carray, x):
+      carray += x
+      a.value += 1.
+      return carray, a
+
+    carry, outs = bm.scan(f, bm.zeros(2), bm.arange(10))
+    self.assertTrue(bm.allclose(carry, 45.))
+    expected = bm.arange(1, 11).astype(outs.dtype)
+    expected = bm.expand_dims(expected, axis=-1)
+    self.assertTrue(bm.allclose(outs, expected))
+
+  def test2(self):
+    a = bm.Variable(1)
+
+    def f(carray, x):
+      carray += x
+      a.value += 1.
+      return carray, a
+
+    @bm.jit
+    def f_outer(carray, x):
+      carry, outs = bm.scan(f, carray, x, unroll=2)
+      return carry, outs
+
+    carry, outs = f_outer(bm.zeros(2), bm.arange(10))
+    self.assertTrue(bm.allclose(carry, 45.))
+    expected = bm.arange(1, 11).astype(outs.dtype)
+    expected = bm.expand_dims(expected, axis=-1)
+    self.assertTrue(bm.allclose(outs, expected))
+
+  def test_disable_jit(self):
+    def cumsum(res, el):
+      res = res + el
+      print(res)
+      return res, res  # ("carryover", "accumulated")
+
+    a = bm.array([1, 2, 3, 5, 7, 11, 13, 17]).value
+    result_init = 0
+    with jax.disable_jit():
+      final, result = jax.lax.scan(cumsum, result_init, a)
+
+    b = bm.array([1, 2, 3, 5, 7, 11, 13, 17])
+    result_init = 0
+    with jax.disable_jit():
+      final, result = bm.scan(cumsum, result_init, b)
+
+    bm.clear_buffer_memory()
+
+  def test_array_aware_of_bp_array(self):
+    def cumsum(res, el):
+      res = bm.asarray(res + el)
+      return res, res  # ("carryover", "accumulated")
+
+    b = bm.array([1, 2, 3, 5, 7, 11, 13, 17])
+    result_init = 0
+    with jax.disable_jit():
+      final, result = bm.scan(cumsum, result_init, b)
+
+
 class TestCond(unittest.TestCase):
   def test1(self):
     bm.random.seed(1)
@@ -207,6 +267,27 @@ class TestIfElse(unittest.TestCase):
       return vmap(f)(bm.random.randint(-20, 20, 200))
 
     self.assertTrue(f2().size == 200)
+
+  def test_grad1(self):
+    def F2(x):
+      return bm.ifelse(conditions=(x >= 10,),
+                       branches=[lambda x: x,
+                                 lambda x: x ** 2, ],
+                       operands=x)
+
+    self.assertTrue(bm.grad(F2)(9.0) == 18.)
+    self.assertTrue(bm.grad(F2)(11.0) == 1.)
+
+  def test_grad2(self):
+    def F3(x):
+      return bm.ifelse(conditions=(x >= 10, x >= 0),
+                       branches=[lambda x: x,
+                                 lambda x: x ** 2,
+                                 lambda x: x ** 4, ],
+                       operands=x)
+
+    self.assertTrue(bm.grad(F3)(9.0) == 18.)
+    self.assertTrue(bm.grad(F3)(11.0) == 1.)
 
 
 class TestWhile(unittest.TestCase):
