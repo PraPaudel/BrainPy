@@ -16,7 +16,6 @@ from . import activations
 
 # operators
 from .pre_syn_post import *
-from .op_register import *
 from . import surrogate, event, sparse, jitconn
 
 # Variable and Objects for object-oriented JAX transformations
@@ -33,8 +32,6 @@ from . import fft
 from . import linalg
 from . import random
 
-# taichi operations
-from . import tifunc
 
 # others
 from . import sharding
@@ -46,10 +43,7 @@ del jnp, config
 
 from brainpy._src.math import defaults
 from brainpy._src.deprecations import deprecation_getattr
-from brainpy._src.dependency_check import import_taichi, import_numba
 
-import_taichi(error_if_not_found=False)
-import_numba(error_if_not_found=False)
 
 __deprecations = {
   "sparse_matmul": ("brainpy.math.sparse_matmul is deprecated. Use brainpy.math.sparse.seg_matmul instead.",

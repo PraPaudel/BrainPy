@@ -1,14 +1,13 @@
 numpy
-brainpylib
 jax
 jaxlib
 matplotlib
 msgpack
 tqdm
 pathos
-taichi
+braintaichi
 numba
-braincore
+brainstate
 braintools
 
 

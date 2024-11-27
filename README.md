@@ -22,6 +22,21 @@ BrainPy is a flexible, efficient, and extensible framework for computational neu
 - **Source on OpenI**: https://git.openi.org.cn/OpenI/BrainPy
 
 
+---
+**NOTE**
+
+Starting from our experimental BrainPy package, a better and mature ecosystem for brain dynamics programming is emerging.
+Please see the [Brain Dynamics Programming Ecosystem](https://ecosystem-for-brain-dynamics.readthedocs.io/) for more details.
+
+
+If you are heavily using BrainPy, please consider using [brainstate](https://brainstate.readthedocs.io) for a more stable, efficient, concise, and powerful experience.
+
+
+[brainstate](https://github.com/chaobrain/brainstate) is and will be active maintained and developed by our team. We highly recommend transferring your code to [brainstate](https://brainstate.readthedocs.io) for a better performance.
+
+---
+
+
 
 ## Installation
 
@@ -50,8 +65,12 @@ We provide a Binder environment for BrainPy. You can use the following button to
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/brainpy/BrainPy-binder/main)
 
 
+
+
 ## Ecosystem
 
+
+- **[Brain Dynamics Programming Ecosystem](https://ecosystem-for-brain-dynamics.readthedocs.io/)**: An emerging and mature ecosystem for brain dynamics programming.
 - **[BrainPy](https://github.com/brainpy/BrainPy)**: The solution for the general-purpose brain dynamics programming. 
 - **[brainpy-examples](https://github.com/brainpy/examples)**: Comprehensive examples of BrainPy computation. 
 - **[brainpy-datasets](https://github.com/brainpy/datasets)**: Neuromorphic and Cognitive Datasets for Brain Dynamics Modeling.
@@ -66,22 +85,4 @@ BrainPy is developed by a team in Neural Information Processing Lab at Peking Un
 Our team is committed to the long-term maintenance and development of the project. 
 
 If you are using ``brainpy``, please consider citing [the corresponding papers](https://brainpy.readthedocs.io/en/latest/tutorial_FAQs/citing_and_publication.html). 
-
-
-
-## Ongoing development plans
-
-We highlight the key features and functionalities that are currently under active development. 
-
-We also welcome your contributions 
-(see [Contributing to BrainPy](https://brainpy.readthedocs.io/en/latest/tutorial_advanced/contributing.html)). 
-
-- [x] model and data parallelization on multiple devices for dense connection models
-- [ ] model parallelization on multiple devices for sparse spiking network models
-- [ ] data parallelization on multiple devices for sparse spiking network models
-- [ ] pipeline parallelization on multiple devices for sparse spiking network models
-- [ ] multi-compartment modeling
-- [ ] measurements, analysis, and visualization methods for large-scale spiking data
-- [ ] Online learning methods for large-scale spiking network models
-- [ ] Classical plasticity rules for large-scale spiking network models
 
